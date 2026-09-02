@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AAMAS - Behavior Replay & Monitoring Dashboard</title>
+  <style>
+    :root {
+      --bg-base: #0a0c10;
+      --bg-surface: #121620;
+      --bg-card: #181d2c;
+      --bg-card-hover: #1f2538;
+      --border-color: #2a334a;
+      --border-accent: #3d4a6b;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-purple: #8b5cf6;
+      --accent-purple-glow: rgba(139, 92, 246, 0.25);
+      --accent-blue: #38bdf8;
+      --accent-green: #22c55e;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background-color: var(--bg-surface);
+      border-bottom: 1px solid var(--border-color);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-badge {
+      background: linear-gradient(135deg, #7c3aed, #2563eb);
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      letter-spacing: 0.5px;
+      box-shadow: 0 0 15px var(--accent-purple-glow);
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+    }
+
+    .btn {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      background-color: var(--bg-card-hover);
+      border-color: var(--border-accent);
+    }
+
+    .btn-primary {
+      background-color: var(--accent-purple);
+      border-color: var(--accent-purple);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #7c3aed;
+      box-shadow: 0 0 12px var(--accent-purple-glow);
+    }
+
+    .main-container {
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      flex: 1;
+    }
+
+    /* Stats bar */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .stat-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background-color: var(--border-accent);
+    }
+
+    .stat-card.purple::before { background-color: var(--accent-purple); }
+    .stat-card.green::before { background-color: var(--accent-green); }
+    .stat-card.amber::before { background-color: var(--accent-amber); }
+    .stat-card.blue::before { background-color: var(--accent-blue); }
+
+    .stat-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    /* Filter Bar */
+    .filter-section {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 16px;
+      justify-content: space-between;
+    }
+
+    .filter-group {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .filter-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    input[type="date"], input[type="time"], select {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      outline: none;
+    }
+
+    input[type="date"]:focus, input[type="time"]:focus, select:focus {
+      border-color: var(--accent-purple);
+    }
+
+    .quick-preset {
+      background: none;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .quick-preset.active {
+      background-color: var(--accent-purple);
+      border-color: var(--accent-purple);
+      color: white;
+    }
+
+    /* Content Layout */
+    .content-grid {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    @media (max-width: 992px) {
+      .content-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Timeline Panel */
+    .timeline-panel {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      max-height: 720px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .episode-count {
+      font-size: 12px;
+      color: var(--text-muted);
+      background-color: var(--bg-card);
+      padding: 2px 8px;
+      border-radius: 12px;
+    }
+
+    .episode-list {
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .episode-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .episode-card:hover {
+      background-color: var(--bg-card-hover);
+      border-color: var(--border-accent);
+      transform: translateY(-1px);
+    }
+
+    .episode-card.active {
+      background-color: #241c3e;
+      border-color: var(--accent-purple);
+      box-shadow: 0 0 10px var(--accent-purple-glow);
+    }
+
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .badge-stimming { background-color: rgba(139, 92, 246, 0.2); color: #c4b5fd; border: 1px solid #8b5cf6; }
+    .badge-avoidance { background-color: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid #f59e0b; }
+    .badge-ears { background-color: rgba(244, 63, 94, 0.2); color: #fda4af; border: 1px solid #f43f5e; }
+    .badge-eyes { background-color: rgba(56, 189, 248, 0.2); color: #bae6fd; border: 1px solid #38bdf8; }
+
+    .source-tag {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .card-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .replay-indicator {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--accent-blue);
+    }
+
+    /* Replay & Details Panel */
+    .viewer-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .canvas-container {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .canvas-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 440px;
+      aspect-ratio: 1;
+      background-color: #07090e;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .playback-controls {
+      width: 100%;
+      max-width: 440px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .scrubber-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent-purple);
+      height: 6px;
+      border-radius: 3px;
+      background: var(--bg-card);
+      cursor: pointer;
+    }
+
+    .frame-counter {
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 50px;
+      text-align: right;
+    }
+
+    .controls-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .control-btn {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.15s ease;
+    }
+
+    .control-btn:hover {
+      background-color: var(--bg-card-hover);
+      border-color: var(--border-accent);
+    }
+
+    .control-btn.active {
+      background-color: var(--accent-purple);
+      border-color: var(--accent-purple);
+      color: white;
+    }
+
+    .privacy-notice {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .legend-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: -4px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    /* Episode Detail Card */
+    .details-card {
+      background-color: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .details-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+    }
+
+    .detail-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .detail-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .detail-text {
+      font-size: 14px;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .empty-state {
+      padding: 40px 20px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-badge">AAMAS</div>
+      <div>
+        <div class="brand-title">Activity Monitor & Replay</div>
+        <div class="brand-subtitle">Autonomous Autism Activity Monitoring & Alerting System</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="status-pill">
+        <div class="status-dot"></div>
+        <span id="server-status">Local Server Active</span>
+      </div>
+      <button class="btn" id="refresh-btn" onclick="fetchData()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Summary Stats -->
+    <section class="stats-grid">
+      <div class="stat-card purple">
+        <span class="stat-label">Total Recorded Episodes</span>
+        <span class="stat-value" id="stat-total">0</span>
+      </div>
+      <div class="stat-card green">
+        <span class="stat-label">Today's Episodes</span>
+        <span class="stat-value" id="stat-today">0</span>
+      </div>
+      <div class="stat-card amber">
+        <span class="stat-label">Rhythmic Stimming</span>
+        <span class="stat-value" id="stat-stimming">0</span>
+      </div>
+      <div class="stat-card blue">
+        <span class="stat-label">Avoidance Behaviors</span>
+        <span class="stat-value" id="stat-avoidance">0</span>
+      </div>
+    </section>
+
+    <!-- Filter Bar -->
+    <section class="filter-section">
+      <div class="filter-group">
+        <div class="filter-item">
+          <label for="filter-date">Date:</label>
+          <input type="date" id="filter-date" onchange="handleDateChange()">
+        </div>
+        <div class="filter-group">
+          <button class="quick-preset active" id="preset-all" onclick="setPreset('all')">All Time</button>
+          <button class="quick-preset" id="preset-today" onclick="setPreset('today')">Today</button>
+          <button class="quick-preset" id="preset-yesterday" onclick="setPreset('yesterday')">Yesterday</button>
+        </div>
+      </div>
+
+      <div class="filter-group">
+        <div class="filter-item">
+          <label for="filter-type">Behavior:</label>
+          <select id="filter-type" onchange="fetchEpisodes()">
+            <option value="">All Behaviors</option>
+            <option value="stimming">Stimming</option>
+            <option value="avoidance">Avoidance</option>
+          </select>
+        </div>
+        <div class="filter-item">
+          <label for="filter-source">Source:</label>
+          <select id="filter-source" onchange="fetchEpisodes()">
+            <option value="">All Sources</option>
+            <option value="live">Live Camera</option>
+            <option value="ingest">Video Ingest</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Content Grid -->
+    <div class="content-grid">
+      <!-- Left: Episode Timeline -->
+      <div class="timeline-panel">
+        <div class="panel-header">
+          <span class="panel-title">Detected Episodes</span>
+          <span class="episode-count" id="list-count">0 episodes</span>
+        </div>
+        <div class="episode-list" id="episode-list">
+          <div class="empty-state">Loading episodes...</div>
+        </div>
+      </div>
+
+      <!-- Right: Viewer & Details -->
+      <div class="viewer-panel">
+        <!-- Skeleton Replay Canvas -->
+        <div class="canvas-container">
+          <div class="canvas-wrapper">
+            <canvas id="skeleton-canvas" width="440" height="440"></canvas>
+          </div>
+
+          <!-- Color Legend -->
+          <div class="legend-row">
+            <div class="legend-item"><div class="legend-dot" style="background:#a78bfa;"></div> Head</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#6c8ef7;"></div> Shoulders</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#38bdf8;"></div> Elbows</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#4ade80;"></div> Wrists</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#fb923c;"></div> Hips</div>
+          </div>
+
+          <!-- Playback Controls -->
+          <div class="playback-controls">
+            <div class="scrubber-row">
+              <input type="range" id="frame-scrubber" min="0" max="0" value="0" oninput="onScrub(this.value)">
+              <span class="frame-counter" id="frame-counter">0 / 0</span>
+            </div>
+            <div class="controls-row">
+              <div class="btn-group">
+                <button class="control-btn" id="prev-frame-btn" title="Previous Frame" onclick="stepFrame(-1)">&#9664;</button>
+                <button class="control-btn active" id="play-pause-btn" title="Play / Pause" onclick="togglePlay()">&#10074;&#10074;</button>
+                <button class="control-btn" id="next-frame-btn" title="Next Frame" onclick="stepFrame(1)">&#9654;</button>
+                <button class="control-btn active" id="loop-btn" title="Loop Replay" onclick="toggleLoop()">&#8635;</button>
+              </div>
+
+              <div class="btn-group">
+                <span style="font-size:12px; color:var(--text-muted); margin-right:4px;">Speed:</span>
+                <select id="playback-speed" onchange="changeSpeed(this.value)" style="padding:4px 8px; font-size:12px;">
+                  <option value="0.5">0.5x</option>
+                  <option value="1.0" selected>1.0x</option>
+                  <option value="1.5">1.5x</option>
+                  <option value="2.0">2.0x</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="privacy-notice">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Privacy by Design: Normalized 3D skeletal joints only &mdash; zero video or facial pixel data.
+          </div>
+        </div>
+
+        <!-- Episode Metadata Card -->
+        <div class="details-card" id="details-card">
+          <div class="panel-title">Episode Details</div>
+          <div class="details-grid">
+            <div class="detail-item">
+              <span class="detail-title">Behavior Category</span>
+              <span class="detail-text" id="detail-category">&mdash;</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-title">Subtype / Action</span>
+              <span class="detail-text" id="detail-subtype">&mdash;</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-title">Duration</span>
+              <span class="detail-text" id="detail-duration">&mdash;</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-title">Source</span>
+              <span class="detail-text" id="detail-source">&mdash;</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-title">Started At</span>
+              <span class="detail-text" id="detail-started">&mdash;</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-title">Resolved At</span>
+              <span class="detail-text" id="detail-ended">&mdash;</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // Bones connecting the 11 captured MediaPipe landmark points:
+    // 0: nose, 2: left eye, 5: right eye
+    // 11: left shoulder, 12: right shoulder
+    // 13: left elbow, 14: right elbow
+    // 15: left wrist, 16: right wrist
+    // 23: left hip, 24: right hip
+    const BONES = [
+      [0, 2], [0, 5],                 // Head
+      [11, 12],                       // Shoulders
+      [11, 23], [12, 24], [23, 24],   // Torso
+      [11, 13], [13, 15],             // Left Arm
+      [12, 14], [14, 16],             // Right Arm
+    ];
+
+    function jointColor(idx) {
+      if ([0, 2, 5].includes(idx)) return "#a78bfa";     // Head: violet
+      if ([11, 12].includes(idx)) return "#6c8ef7";      // Shoulders: indigo
+      if ([13, 14].includes(idx)) return "#38bdf8";      // Elbows: sky
+      if ([15, 16].includes(idx)) return "#4ade80";      // Wrists: green
+      if ([23, 24].includes(idx)) return "#fb923c";      // Hips: orange
+      return "#e2e8f0";
+    }
+
+    // App state
+    let episodes = [];
+    let selectedEpisode = null;
+    let currentSnapshot = null;
+    let animationFrameId = null;
+    let isPlaying = true;
+    let isLooping = true;
+    let speedMultiplier = 1.0;
+    let currentFrameIndex = 0;
+    let lastRenderTimestamp = null;
+
+    const canvas = document.getElementById("skeleton-canvas");
+    const ctx = canvas.getContext("2d");
+    const scrubber = document.getElementById("frame-scrubber");
+    const frameCounter = document.getElementById("frame-counter");
+    const playPauseBtn = document.getElementById("play-pause-btn");
+    const loopBtn = document.getElementById("loop-btn");
+
+    function init() {
+      fetchData();
+      // Optional polling for live updates every 5 seconds
+      setInterval(fetchData, 5000);
+    }
+
+    async function fetchData() {
+      await Promise.all([fetchStats(), fetchEpisodes()]);
+    }
+
+    async function fetchStats() {
+      try {
+        const res = await fetch("/api/stats");
+        if (!res.ok) return;
+        const stats = await res.json();
+        document.getElementById("stat-total").textContent = stats.total_episodes || 0;
+        document.getElementById("stat-today").textContent = stats.today_episodes || 0;
+        document.getElementById("stat-stimming").textContent = (stats.by_type && stats.by_type.stimming) || 0;
+        document.getElementById("stat-avoidance").textContent = (stats.by_type && stats.by_type.avoidance) || 0;
+      } catch (err) {
+        console.warn("Could not fetch stats:", err);
+      }
+    }
+
+    async function fetchEpisodes() {
+      const dateVal = document.getElementById("filter-date").value;
+      const typeVal = document.getElementById("filter-type").value;
+      const sourceVal = document.getElementById("filter-source").value;
+
+      let url = "/api/episodes?limit=100";
+      if (dateVal) url += `&date=${encodeURIComponent(dateVal)}`;
+      if (typeVal) url += `&type=${encodeURIComponent(typeVal)}`;
+      if (sourceVal) url += `&source=${encodeURIComponent(sourceVal)}`;
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("API error " + res.status);
+        episodes = await res.json();
+        renderEpisodeList();
+
+        // Auto-select first episode if none or previous selection not in list
+        if (episodes.length > 0) {
+          if (!selectedEpisode || !episodes.some(e => e.id === selectedEpisode.id)) {
+            selectEpisode(episodes[0].id);
+          }
+        } else {
+          selectedEpisode = null;
+          currentSnapshot = null;
+          renderEmptyCanvas("No episodes found matching filter");
+          renderDetails(null);
+        }
+      } catch (err) {
+        console.error("Failed to load episodes:", err);
+        document.getElementById("episode-list").innerHTML = `
+          <div class="empty-state">
+            Failed to connect to local server.<br>
+            <span style="font-size:11px;">Make sure the server is running on localhost:8000</span>
+          </div>
+        `;
+      }
+    }
+
+    function renderEpisodeList() {
+      const listEl = document.getElementById("episode-list");
+      document.getElementById("list-count").textContent = `${episodes.length} episodes`;
+
+      if (episodes.length === 0) {
+        listEl.innerHTML = '<div class="empty-state">No recorded episodes found.</div>';
+        return;
+      }
+
+      listEl.innerHTML = episodes.map(ep => {
+        const isSelected = selectedEpisode && selectedEpisode.id === ep.id;
+        let badgeClass = "badge-stimming";
+        let badgeLabel = ep.subtype || ep.type;
+
+        if (ep.type === "avoidance" || ep.subtype?.includes("avoidance")) {
+          badgeClass = ep.subtype?.includes("ears") ? "badge-ears" : (ep.subtype?.includes("eyes") ? "badge-eyes" : "badge-avoidance");
+        }
+
+        const dateStr = ep.started_at ? formatTime(ep.started_at) : "N/A";
+        const durStr = ep.duration_s ? `${ep.duration_s.toFixed(1)}s` : "0s";
+
+        return `
+          <div class="episode-card ${isSelected ? 'active' : ''}" onclick="selectEpisode(${ep.id})">
+            <div class="card-top">
+              <span class="badge ${badgeClass}">${badgeLabel.replace(/_/g, ' ')}</span>
+              <span class="source-tag">${ep.source || 'live'}</span>
+            </div>
+            <div class="card-meta">
+              <span>${dateStr}</span>
+              <span style="font-weight:600;">${durStr}</span>
+            </div>
+            ${ep.has_snapshot ? '<div class="replay-indicator"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Skeleton Replay Available</div>' : ''}
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function selectEpisode(id) {
+      try {
+        const res = await fetch(`/api/episodes/${id}`);
+        if (!res.ok) throw new Error("Could not fetch episode");
+        const ep = await res.json();
+        selectedEpisode = ep;
+        renderEpisodeList();
+        renderDetails(ep);
+
+        if (ep.snapshot && ep.snapshot.frames && ep.snapshot.frames.length > 0) {
+          loadSnapshot(ep.snapshot);
+        } else {
+          currentSnapshot = null;
+          renderEmptyCanvas("No skeleton coordinates recorded for this episode");
+        }
+      } catch (err) {
+        console.error("Failed to select episode:", err);
+      }
+    }
+
+    function renderDetails(ep) {
+      if (!ep) {
+        document.getElementById("detail-category").textContent = "—";
+        document.getElementById("detail-subtype").textContent = "—";
+        document.getElementById("detail-duration").textContent = "—";
+        document.getElementById("detail-source").textContent = "—";
+        document.getElementById("detail-started").textContent = "—";
+        document.getElementById("detail-ended").textContent = "—";
+        return;
+      }
+
+      document.getElementById("detail-category").textContent = (ep.type || "N/A").toUpperCase();
+      document.getElementById("detail-subtype").textContent = (ep.subtype || ep.action || "N/A").replace(/_/g, " ");
+      document.getElementById("detail-duration").textContent = ep.duration_s ? `${ep.duration_s.toFixed(2)} seconds` : "0s";
+      document.getElementById("detail-source").textContent = (ep.source || "live").toUpperCase();
+      document.getElementById("detail-started").textContent = ep.started_at ? new Date(ep.started_at).toLocaleString() : "N/A";
+      document.getElementById("detail-ended").textContent = ep.ended_at ? new Date(ep.ended_at).toLocaleString() : "N/A";
+    }
+
+    function loadSnapshot(snapshot) {
+      currentSnapshot = snapshot;
+      currentFrameIndex = 0;
+      lastRenderTimestamp = null;
+
+      scrubber.max = snapshot.frames.length - 1;
+      scrubber.value = 0;
+      updateFrameCounter();
+
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      isPlaying = true;
+      playPauseBtn.innerHTML = "&#10074;&#10074;";
+      playPauseBtn.classList.add("active");
+
+      requestAnimationFrame(animationLoop);
+    }
+
+    function animationLoop(timestamp) {
+      if (!currentSnapshot || !currentSnapshot.frames.length) return;
+
+      const fps = (currentSnapshot.fps || 10) * speedMultiplier;
+      const interval = 1000 / fps;
+
+      if (!lastRenderTimestamp) lastRenderTimestamp = timestamp;
+      const elapsed = timestamp - lastRenderTimestamp;
+
+      if (isPlaying && elapsed >= interval) {
+        currentFrameIndex++;
+        if (currentFrameIndex >= currentSnapshot.frames.length) {
+          if (isLooping) {
+            currentFrameIndex = 0;
+          } else {
+            currentFrameIndex = currentSnapshot.frames.length - 1;
+            isPlaying = false;
+            playPauseBtn.innerHTML = "&#9654;";
+            playPauseBtn.classList.remove("active");
+          }
+        }
+        scrubber.value = currentFrameIndex;
+        updateFrameCounter();
+        drawFrame(currentSnapshot.frames[currentFrameIndex]);
+        lastRenderTimestamp = timestamp;
+      }
+
+      if (isPlaying) {
+        animationFrameId = requestAnimationFrame(animationLoop);
+      }
+    }
+
+    function drawFrame(frame) {
+      if (!ctx || !frame) return;
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const PAD = 50;
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Map normalized points to canvas coordinate space
+      const pts = {};
+      for (const pt of frame.points) {
+        pts[pt.i] = {
+          x: PAD + pt.x * (W - 2 * PAD),
+          y: PAD + pt.y * (H - 2 * PAD)
+        };
+      }
+
+      // Draw bone connecting lines
+      for (const [a, b] of BONES) {
+        if (pts[a] && pts[b]) {
+          ctx.beginPath();
+          ctx.moveTo(pts[a].x, pts[a].y);
+          ctx.lineTo(pts[b].x, pts[b].y);
+          ctx.strokeStyle = jointColor(b) + "aa";
+          ctx.lineWidth = 3.5;
+          ctx.lineCap = "round";
+          ctx.stroke();
+        }
+      }
+
+      // Draw joint dots
+      for (const [idxStr, pos] of Object.entries(pts)) {
+        const i = parseInt(idxStr);
+        const radius = i === 0 ? 8 : 6;
+
+        // Outer glow
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius + 2, 0, Math.PI * 2);
+        ctx.fillStyle = jointColor(i) + "44";
+        ctx.fill();
+
+        // Solid dot
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = jointColor(i);
+        ctx.fill();
+      }
+
+      // Frame overlay info
+      ctx.font = "11px monospace";
+      ctx.fillStyle = "#64748b";
+      ctx.textAlign = "right";
+      ctx.fillText(`t = ${frame.t.toFixed(2)}s`, W - 12, H - 12);
+    }
+
+    function renderEmptyCanvas(message) {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      const W = canvas.width;
+      const H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "#64748b";
+      ctx.font = "13px -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(message, W / 2, H / 2);
+      scrubber.max = 0;
+      scrubber.value = 0;
+      frameCounter.textContent = "0 / 0";
+    }
+
+    function updateFrameCounter() {
+      if (!currentSnapshot) {
+        frameCounter.textContent = "0 / 0";
+        return;
+      }
+      frameCounter.textContent = `${currentFrameIndex + 1} / ${currentSnapshot.frames.length}`;
+    }
+
+    function togglePlay() {
+      if (!currentSnapshot) return;
+      isPlaying = !isPlaying;
+      if (isPlaying) {
+        playPauseBtn.innerHTML = "&#10074;&#10074;";
+        playPauseBtn.classList.add("active");
+        lastRenderTimestamp = null;
+        animationFrameId = requestAnimationFrame(animationLoop);
+      } else {
+        playPauseBtn.innerHTML = "&#9654;";
+        playPauseBtn.classList.remove("active");
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      }
+    }
+
+    function toggleLoop() {
+      isLooping = !isLooping;
+      loopBtn.classList.toggle("active", isLooping);
+    }
+
+    function stepFrame(delta) {
+      if (!currentSnapshot) return;
+      isPlaying = false;
+      playPauseBtn.innerHTML = "&#9654;";
+      playPauseBtn.classList.remove("active");
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+      currentFrameIndex = Math.max(0, Math.min(currentSnapshot.frames.length - 1, currentFrameIndex + delta));
+      scrubber.value = currentFrameIndex;
+      updateFrameCounter();
+      drawFrame(currentSnapshot.frames[currentFrameIndex]);
+    }
+
+    function onScrub(val) {
+      if (!currentSnapshot) return;
+      currentFrameIndex = parseInt(val);
+      updateFrameCounter();
+      drawFrame(currentSnapshot.frames[currentFrameIndex]);
+    }
+
+    function changeSpeed(val) {
+      speedMultiplier = parseFloat(val) || 1.0;
+    }
+
+    function setPreset(preset) {
+      document.querySelectorAll(".quick-preset").forEach(b => b.classList.remove("active"));
+      const btn = document.getElementById(`preset-${preset}`);
+      if (btn) btn.classList.add("active");
+
+      const dateInput = document.getElementById("filter-date");
+      if (preset === "all") {
+        dateInput.value = "";
+      } else if (preset === "today") {
+        dateInput.value = new Date().toISOString().split("T")[0];
+      } else if (preset === "yesterday") {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        dateInput.value = d.toISOString().split("T")[0];
+      }
+      fetchEpisodes();
+    }
+
+    function handleDateChange() {
+      document.querySelectorAll(".quick-preset").forEach(b => b.classList.remove("active"));
+      fetchEpisodes();
+    }
+
+    function formatTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch {
+        return iso;
+      }
+    }
+
+    // Start on DOM ready
+    window.addEventListener("DOMContentLoaded", init);
+  </script>
+</body>
+</html>

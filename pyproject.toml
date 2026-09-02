@@ -1,0 +1,21 @@
+# Tooling configuration for AAMAS.
+# ruff provides both linting and black-compatible formatting (single tool).
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Scope: application code, tests, and root-level scripts.
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+# Conservative starter rule set to keep existing code quiet while catching real issues:
+#   E/W = pycodestyle, F = pyflakes, I = import sorting, UP = pyupgrade.
+select = ["E", "W", "F", "I", "UP"]
+# E501 (line too long) is left to the formatter, which deliberately does not wrap
+# long string literals / comments (HUD labels, log messages). Enforcing it would
+# only push us to hand-mangle readable strings, so we disable it as a lint error.
+ignore = ["E501"]
+
+[tool.ruff.format]
+# Black-compatible defaults (double quotes, trailing commas, etc.).
+quote-style = "double"

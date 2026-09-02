@@ -1,0 +1,22 @@
+# Pinned for reproducible builds (CI, onboarding). Versions reflect the tested
+# environment (Python 3.11).
+
+# Computer Vision & Machine Learning
+# NOTE: mediapipe 0.10.x is the maintained google-ai-edge line.
+opencv-python==4.10.0.84
+mediapipe==0.10.14
+numpy==2.4.6
+scikit-learn==1.9.0
+
+# Network Alerts & Notification gateway
+requests==2.34.2
+twilio==9.11.0
+python-dotenv==1.2.3
+
+# Testing
+pytest==9.1.1
+pytest-mock==3.15.1
+
+# Linting & formatting
+ruff==0.16.5
+pre-commit==4.6.2

@@ -1,0 +1,13 @@
+# Pre-commit hooks for AAMAS. Install once with:  pre-commit install
+# Runs ruff (lint + format) on staged files at commit time.
+# Rules and formatting are configured in pyproject.toml.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.5
+    hooks:
+      # Linter — auto-fixes safe issues (imports, etc.); config in pyproject.toml.
+      - id: ruff
+        args: [--fix]
+      # Black-compatible formatter.
+      - id: ruff-format
