@@ -70,7 +70,10 @@ def main():
         help="Logging verbosity (default: INFO)",
     )
     args = parser.parse_args()
-    args.headless = args.headless or not os.environ.get("DISPLAY")
+    if not args.headless and sys.platform.startswith("linux"):
+        # Auto-detect headless environment on Linux where neither X11 nor Wayland is present
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            args.headless = True
     configure_logging(args.log_level)
 
     # Resolve + load the environment and show a banner.
@@ -407,6 +410,8 @@ def main():
 
         act_ratio_val = 0.0
         stimming_score_val = 0.0
+        subtype_val = "NONE"
+        action_val = "NONE"
         if classification:
             freq_val = classification["frequency"]
             avg_vel_val = classification["mean_velocity"]
@@ -416,6 +421,16 @@ def main():
             eye_openness_val = classification.get("eye_openness_ratio", 1.0)
             act_ratio_val = classification.get("activation_ratio", 0.0)
             stimming_score_val = classification.get("stimming_score", 0.0)
+            subtype_val = (
+                (classification.get("behavior_subcategory") or "none")
+                .replace("_", " ")
+                .upper()
+            )
+            action_val = (
+                (classification.get("behavior_action") or "none")
+                .replace("_", " ")
+                .upper()
+            )
 
             if classification.get("ears_closed_stimming", False):
                 status_text = "EARS-CLOSED STIMMING"
@@ -446,7 +461,7 @@ def main():
         )
         cv2.putText(
             frame,
-            f"SUBTYPE: {classification.get('behavior_subcategory', 'none').replace('_', ' ').upper()}",
+            f"SUBTYPE: {subtype_val}",
             (panel_x1 + 10, panel_y1 + 70),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
@@ -456,7 +471,7 @@ def main():
         )
         cv2.putText(
             frame,
-            f"ACTION: {classification.get('behavior_action', 'none').replace('_', ' ').upper()}",
+            f"ACTION: {action_val}",
             (panel_x1 + 10, panel_y1 + 90),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
