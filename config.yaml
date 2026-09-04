@@ -1,0 +1,217 @@
+# Appearance backbone. X-CLIP is the default on measurement, not preference:
+# held out on a 9.3-minute video in an unseen room it reached mAP@0.5 0.750 with
+# zero false alarms, where V-JEPA 2 reached 0.000. Self-supervised video features
+# encode the room (they read +1 sigma in one and -1 in another); a video-LANGUAGE
+# encoder is pushed to discard what a caption would not mention.
+backbone: xclip
+
+backbones:
+  xclip:
+    model_id: microsoft/xclip-base-patch16      # 8 frames/clip, 0.36s per clip
+  siglip:
+    model_id: google/siglip-base-patch16-224    # per-frame control; 0.500 mAP
+    frames_per_clip: 8
+  vjepa:
+    model_id: facebook/vjepa2-vitl-fpc64-256    # previous default; 0.000 mAP held out
+    frames_per_clip: 16
+
+model_id: microsoft/xclip-base-patch16          # resolved from `backbone` at load
+working_fps: 8
+chunk_sec: 2.0
+window_scales: [0.7, 1.0, 1.4]
+stride_ratio: 0.25
+topk_prototypes: 3
+smoothing_windows: 3
+tau_high: null            # set by calibrate.py, never hand-edited
+
+# Scores are standardized against the background distribution before
+# thresholding, so tau_high and tau_low are in SIGMA ABOVE BACKGROUND, not raw
+# cosine. Raw cosines from one scene cluster near 0.9, where an absolute
+# threshold means nothing across rooms and tau_low x 0.85 lands below background
+# (a detection then opens and never closes). Set false only to reproduce the
+# raw-cosine behaviour.
+normalize_scores: true
+tau_low_ratio: 0.85       # of tau_high, now on the sigma scale
+min_duration_ratio: 0.5
+nms_tiou: 0.5
+max_false_alarms_per_hour: 5
+
+# Frames fed to the encoder per clip. Resolved from the active backbone's entry
+# above when it sets one -- X-CLIP is trained at 8 frames and feeding it a
+# different count silently degrades it. The cache keys on this value, so a change
+# invalidates cleanly rather than reusing stale features.
+frames_per_clip: 8
+
+device: auto              # auto | cuda | mps | cpu
+dtype: auto               # auto | bf16 | fp16 | fp32
+
+# auto | decord | pyav | torchvision | opencv, tried in that order when auto.
+# PyAV and OpenCV each bundle their own ffmpeg; macOS warns about duplicate
+# libavdevice classes when both load into one process. Pin this to "opencv" if
+# that ever turns into a real crash -- at the cost of correct timing on
+# variable-frame-rate sources, where OpenCV assumes a constant rate and PyAV
+# reads true presentation timestamps.
+video_backend: auto
+
+event_log:
+  path: data/events/events.csv
+  flush_each_event: true            # fsync after every row; a long session must survive a crash
+  max_open_sec: 60                  # force-close a detection stuck open (§9.4).
+                                    # Kept tight deliberately: without the calibrated
+                                    # scale, live produced 55-106s runaways, and a cap
+                                    # is the only thing that bounds them.
+  infer_video_start_from_mtime: false   # else offline start_utc/end_utc stay empty (§9.3)
+
+# Pose and hand streams: OFF by default, on measurement.
+#
+# They were built because V-JEPA's appearance stream scored at chance, and for a
+# while they were the only streams that worked. Held out on eval3 they became
+# actively harmful: every fused configuration collapsed to mAP 0.125 / 19.3
+# false alarms per hour regardless of backbone, while X-CLIP appearance alone
+# reached 0.750 / 0.0. Their templates come from upright frontal references and
+# fail on a subject seated looking down.
+#
+# The code is kept and tested. Re-enable if a behaviour turns out to need
+# geometry the appearance stream cannot express -- but re-measure held out
+# before trusting the fusion weights, which were tuned when appearance was noise.
+pose:
+  enabled: false
+  # Prefer local models/ copy on the server; fall back to atmos-proj locally.
+  model_path: models/pose_landmarker.task
+  min_confidence: 0.5
+  temperature: 0.35                 # sim = exp(-DTW / temperature)
+
+# Pose-derived cropping. OFF: measured a no-op on every video tested (the
+# subject fills the frame, so boxes come back full-frame), and it forces pose
+# extraction on every run for nothing. Would matter for a wide room shot where
+# the subject is small in frame -- untested there.
+crop:
+  enabled: false
+  padding: 0.35                     # outward pad, as a fraction of the box
+  min_size: 0.25                    # floor on box size in normalized coords
+  smooth_window: 5                  # median filter across chunks; a jittery box
+                                    # is apparent motion the encoder reads as signal
+
+# Hand landmark stream. MediaPipe POSE has no finger landmarks, which is why
+# hair-twirling scored -0.18 sigma from pose while ear-cover scored +1.70:
+# ear-cover is whole-arm geometry, hair-twirling is finger motion. 21 landmarks
+# per hand, wrist-normalized, so this stream carries finger shape only.
+hands:
+  enabled: false
+  model_path: null                  # null -> ./hand_landmarker.task
+  min_confidence: 0.4
+  temperature: 0.35
+
+# Saving a clip per detected event. This is the ONLY part of the system that
+# writes recorded video to disk -- everything else keeps embeddings and
+# timestamps. What lands in `dir` is footage of the monitored person, kept until
+# the size budget evicts it or you delete it. Set enabled:false for
+# timestamps-only operation, which retains no video anywhere.
+clips:
+  enabled: true
+  dir: data/clips
+  pre_roll_sec: 2.0                 # context kept before the detected start
+  post_roll_sec: 2.0                # ...and after the end
+  max_clip_sec: 60                  # longer events are truncated
+  max_total_gb: 5.0                 # oldest clips deleted past this
+  jpeg_quality: 80                  # live in-memory retention buffer only
+
+live:
+  # macOS exposes Continuity Camera (an iPhone) alongside the built-in webcam,
+  # and index 0 is not reliably the built-in one. Run
+  #   python scripts/detect_live.py --list-cameras
+  # to see which indices actually deliver frames.
+  camera_index: 0
+  camera_warmup_sec: 5.0            # a camera can report open before it is ready
+  capture_fps: 30                   # device rate; frames are resampled to working_fps
+  drop_on_backpressure: true        # drop frames rather than block the encoder; log the rate
+
+  # Live timing: offline uses longer multi-scale windows + trailing smooth,
+  # which keeps a detection open for seconds after the person stops. These
+  # overrides make close track the latest chunk while open still uses the
+  # multi-scale max for recall.
+  smoothing_windows: 1
+  window_scales: [0.7, 1.0]         # drop the 1.4x scale used offline
+  close_on_short_window: true
+  min_duration_sec: 1.0             # allow brief nods; offline still uses ratio*W_base
+  background_warmup_chunks: 15      # 30s at chunk_sec 2.0 — do not cut this;
+                                    # short warmups let sigma fire on noise
+  background_window_chunks: 300     # ~10 min of trailing history
+
+  # Cross-class resolution, online (spec 7.3.5). Offline this runs after
+  # grouping; live it applies at the moment of opening. Measured on eval3 it
+  # took mAP@0.5 from 0.333 to 0.500.
+  cross_class_resolution: true
+  # Rank contenders on per-class SIGMA (not raw cosine). Face-near actions
+  # (ear_cover / hair_twirling / head_nodding) sit within ~0.05 raw cosine, so
+  # raw ranking mislabels nods as ear_cover. Each class must still clear its
+  # own tau_high before it is a contender, which keeps scales comparable.
+  cross_class_on_raw: false
+  # Suppress opens when the top two contenders are this close (sigma units
+  # when cross_class_on_raw is false; cosine when true). Stops near-tie FPs.
+  open_margin: 0.35
+  # Keep chunks inside an open detection out of that class's background estimate,
+  # so a sustained event cannot drag the baseline into itself. Raises recall from
+  # 0.50 to 1.00, at the cost of more false positives (FA/h 19 -> 32): a spurious
+  # detection also freezes the estimate that would have ended it.
+  protect_background: true
+  # A new detection is evidence the running one has ended -- one subject cannot
+  # cover their ears and twirl their hair at the same time. Every runaway in the
+  # recorded sessions had another detection firing inside it. Domain assumption,
+  # so it is a flag.
+  mutual_exclusion: true
+  centre_warmup_chunks: 5           # used only when use_calibrated_scale is on
+  # OFF: the mechanism measured well in simulation but the calibrated value was
+  # wrong in practice (see src/live.py), and live detected nothing. Rolled back
+  # to estimating spread from the running window. Keep false until calibrate.py
+  # has written a per-video background_scale into cache/calibration.json.
+  use_calibrated_scale: false
+
+prototypes:
+  variants_per_class: 12            # spec asks for 10-15
+  speeds: [0.8, 1.0, 1.25]
+  temporal_crop_min_ratio: 0.7
+  spatial_crop_min_ratio: 0.9
+  degrade: true                     # one lightly JPEG-degraded variant per class
+  seed: 0
+  # Cap each reference at this length before encoding. Longer takes inflate
+  # W_base / min_duration and kill short live actions (head nods). Trim keeps
+  # the highest-motion window. Prefer recording 2-4s of action only.
+  max_reference_sec: 4.0
+
+classes:
+  # Directory names under data/references/ must match these keys exactly.
+  # `weights` mixes the three streams per class (normalized to 1). Starting
+  # values come from measurement, not taste: pose scored +1.70 sigma on
+  # ear_cover, and hair_twirling needs finger detail that only the hand stream
+  # carries. Re-tune after check_separation.py reports per-stream margins.
+  ear_cover:
+    # Mirroring a left-hand ear cover gives a right-hand one, which is the same
+    # behaviour -- so flipping is safe here and doubles the usable variants.
+    allow_flip: true
+    repetitive: false               # sustained posture, not rhythmic
+    # Appearance-only while pose/hands DTW fusion is disabled (held-out harmful).
+    weights: {vjepa: 1.0, pose: 0.0, hands: 0.0}
+    # Live FPs open at ~1.5-2.2σ on chin-rest / face motion. Raise this class
+    # only -- head_nodding stays at the global tau.
+    tau_scale: 1.8                  # effective tau_high = 2.7 sigma
+    # atmos-proj style: require a wrist near an ear before opening. Appearance
+    # alone cannot tell chin-rest from ear cover; geometry can. Does NOT enable
+    # DTW pose fusion (pose.enabled stays false).
+    require_wrist_near_ear: true
+    wrist_near_ear_threshold: 0.28  # shoulder-normalized; atmos uses 0.18 for both hands
+
+  hair_twirling:
+    allow_flip: true                # mirrored, still hair twirling
+    repetitive: true                # Phase 5 only, unused in v1
+    weights: {vjepa: 1.0, pose: 0.0, hands: 0.0}
+    # Live FPs open at ~1.5-2.3σ under the shared tau (1.5). Raise only this
+    # class so idle face/hand motion and ear→hair handoffs need a clearer hit.
+    # head_nodding / ear_cover stay at the global tau.
+    tau_scale: 2.0                  # effective tau_high = 3.0 sigma
+
+  head_nodding:
+    allow_flip: false
+    repetitive: true
+    weights: {vjepa: 1.0, pose: 0.0, hands: 0.0}
+

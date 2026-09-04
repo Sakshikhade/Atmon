@@ -1,0 +1,36 @@
+# Core
+torch>=2.2
+transformers>=4.53          # V-JEPA 2 support landed here
+numpy
+pyyaml
+tqdm
+scikit-learn
+
+# Video decoding. decord is preferred but has no official Apple Silicon wheel;
+# src/chunker.py falls back to PyAV -> torchvision -> OpenCV automatically.
+decord; platform_machine != "arm64" or sys_platform != "darwin"
+av
+torchvision
+
+# Live camera capture (10). decord reads files, not devices.
+opencv-python
+
+# Pose stream (11.3). Frozen keypoints, nothing trained.
+#
+# The <1.0.0 pin is load-bearing on macOS arm64, not cosmetic. mediapipe 1.0.x
+# aborts the whole process when PoseLandmarker opens:
+#     F graph_service.h:139] Check failed: service_ Service is unavailable
+#     -[DrishtiMetalHelper initWithCalculatorContext:]
+#     mediapipe::api2::TensorsToDetectionsCalculator::Open()
+# It is a SIGABRT from C++, so Python cannot catch or retry it, and it happens
+# with or without torch in the process and with either delegate. 0.10.35 works.
+# Verify on your platform before relaxing this.
+mediapipe>=0.10.30,<1.0.0
+
+# Tests
+pytest
+
+# Web demo
+fastapi
+uvicorn[standard]
+python-multipart

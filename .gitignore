@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Model weights -- large and re-downloadable, not source.
+# NOTE: src/pose.py reads ../pose_landmarker.task, which lives OUTSIDE this
+# repo. A clone elsewhere needs that file supplied or pose.model_path repointed.
+*.task
+
+# Derived artifacts: features, keypoints, prototype banks, calibration
+cache/
+
+# Recorded footage. Nothing containing video of the subject is tracked --
+# reference clips included. They are the system's source of truth, so keep
+# your own backup: losing them means re-recording.
+data/videos/
+data/references/
+data/events/
+data/clips/
+*.dets.json
+*.mov
+
+*.pem
+dev-Juno.pem
