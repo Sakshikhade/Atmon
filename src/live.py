@@ -285,8 +285,13 @@ class LiveDetector:
         self.trackers = {}
         for name in self.class_names:
             th, tl = class_tau(cfg, name, tau_high)
+            confirm = float(cfg.class_cfg(name).get("confirm_sec", 0.0))
             self.trackers[name] = HysteresisTracker(
-                name, th, tl, max_open_sec=max_open)
+                name, th, tl, max_open_sec=max_open, confirm_sec=confirm)
+        self.max_confirm_sec = max(
+            (float(cfg.class_cfg(n).get("confirm_sec", 0.0)) for n in self.class_names),
+            default=0.0,
+        )
 
         # Live can pin a shorter floor so brief gestures (nods) are not discarded
         # when W_base is still a few seconds.
@@ -709,10 +714,10 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
     if clips_enabled(cfg):
         clips_cfg = cfg["clips"]
         store = build_store(cfg)
-        base_horizon = detector.lag_sec + detector.pre_roll + 2.0
+        base_horizon = detector.lag_sec + detector.pre_roll + detector.max_confirm_sec + 2.0
         frame_buffer = FrameRetentionBuffer(
             base_horizon_sec=base_horizon,
-            hard_ceiling_sec=store.max_clip_sec + detector.pre_roll + detector.post_roll + detector.lag_sec,
+            hard_ceiling_sec=store.max_clip_sec + detector.pre_roll + detector.post_roll + detector.lag_sec + detector.max_confirm_sec,
             jpeg_quality=clips_cfg.get("jpeg_quality", 80),
         )
         detector.frame_buffer = frame_buffer

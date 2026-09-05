@@ -189,7 +189,7 @@ def test_build_then_live_wires_pose_hands_and_calibrated_scale(workspace, monkey
     server_mod.STATE.live_stop = threading.Event()
     server_mod.STATE.subscribers = []
 
-    server_mod._live_loop(cfg, camera_index=0, max_seconds=1.3)
+    server_mod._live_loop(cfg, camera_index=0, max_seconds=1.3, source="server")
 
     # Gap 1: the calibrated background_scale from cache/calibration.json must
     # reach LiveDetector, not be dropped as None.

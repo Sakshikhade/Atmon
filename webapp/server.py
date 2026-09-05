@@ -335,22 +335,24 @@ def api_preview():
 
 
 # --------------------------------------------------------------------------
-# Step 1 -- add a reference clip: record from the server webcam, then run the
-# prototype-bank build in the background (spec 6) and report readiness.
+# Step 1 -- add a reference clip: record from browser webcam (default) or
+# server OpenCV camera, then run the prototype-bank build in the background
+# (spec 6) and report readiness.
 # --------------------------------------------------------------------------
 
-def _record_loop(c, class_name, camera_index, fps):
+def _record_loop(c, class_name, camera_index, fps, source="browser"):
     interval = 1.0 / float(fps)
     max_sec = float(c.get("prototypes", {}).get("max_reference_sec", 4.0))
+    stream = None
     try:
-        stream = CameraStream(camera_index=camera_index, capture_fps=30, warmup_sec=5.0).start()
+        stream = _open_stream(source, camera_index, live_cfg=c.get("live"))
     except RuntimeError as exc:
         STATE.publish("record_error", {"message": str(exc)})
         with STATE.lock:
             STATE.mode = "idle"
         return
 
-    STATE.publish("record_started", {"class_name": class_name, "max_sec": max_sec})
+    STATE.publish("record_started", {"class_name": class_name, "max_sec": max_sec, "source": source})
     t0 = time.time()
     next_at = t0
     try:
@@ -380,16 +382,20 @@ def _record_loop(c, class_name, camera_index, fps):
                 break
     finally:
         stream.release()
+        _clear_ingest(stream)
 
 
 @app.post("/api/record/start")
-def api_record_start(class_name: str, camera_index: int = 0):
+def api_record_start(class_name: str, camera_index: int = 0, source: str = "browser"):
     with STATE.lock:
         if STATE.mode != "idle":
             raise HTTPException(409, "busy: current mode is %r" % STATE.mode)
         class_name = class_name.strip()
         if not class_name or not class_name.replace("_", "").isalnum():
             raise HTTPException(400, "class name must be alphanumeric/underscore")
+        source = (source or "browser").strip().lower()
+        if source not in ("browser", "server"):
+            raise HTTPException(400, "source must be 'browser' or 'server'")
         STATE.mode = "recording"
         STATE.record_class = class_name
         STATE.record_frames = []
@@ -397,10 +403,10 @@ def api_record_start(class_name: str, camera_index: int = 0):
 
     c = cfg()
     STATE.record_thread = threading.Thread(
-        target=_record_loop, args=(c, class_name, camera_index, c["working_fps"]), daemon=True
+        target=_record_loop, args=(c, class_name, camera_index, c["working_fps"], source), daemon=True
     )
     STATE.record_thread.start()
-    return {"ok": True}
+    return {"ok": True, "source": source}
 
 
 @app.post("/api/record/stop")
@@ -548,15 +554,17 @@ def _build_loop(c):
 
 # --------------------------------------------------------------------------
 # Step 2 -- live test. Runs the real live detector (src/live.py) against the
-# server's webcam. Re-implements run_live()'s loop rather than calling it
-# directly, because run_live() installs a SIGINT handler (main-thread only)
-# and this runs in a background thread; stop is a plain Event instead.
+# browser webcam (default) or the server's OpenCV camera. Re-implements
+# run_live()'s loop rather than calling it directly, because run_live()
+# installs a SIGINT handler (main-thread only) and this runs in a background
+# thread; stop is a plain Event instead.
 # --------------------------------------------------------------------------
 
-def _live_loop(c, camera_index, max_seconds):
+def _live_loop(c, camera_index, max_seconds, source="browser"):
     started_at = utc_now()
     session_id = live_session_id(started_at)
     STATE.live_session_id = session_id
+    stream = None
 
     try:
         encoder = get_encoder(c)
@@ -609,13 +617,10 @@ def _live_loop(c, camera_index, max_seconds):
     )
 
     live_cfg = c["live"]
+    if camera_index is None:
+        camera_index = live_cfg["camera_index"]
     try:
-        stream = CameraStream(
-            camera_index=camera_index if camera_index is not None else live_cfg["camera_index"],
-            capture_fps=live_cfg["capture_fps"],
-            drop_on_backpressure=live_cfg["drop_on_backpressure"],
-            warmup_sec=float(live_cfg.get("camera_warmup_sec", 5.0)),
-        ).start()
+        stream = _open_stream(source, camera_index, live_cfg=live_cfg)
     except RuntimeError as exc:
         STATE.publish("live_error", {"message": str(exc)})
         writer.close()
@@ -628,23 +633,35 @@ def _live_loop(c, camera_index, max_seconds):
     # the web demo -- see src.live.run_live for the reference wiring.
     try:
         pose_templates, pose_extractor = load_live_pose_extractor(c)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
         STATE.publish("live_error", {
-            "message": "ear_cover wrist gate needs pose model: %s" % exc,
+            "message": "pose landmarker failed to load (ear_cover wrist gate): %s" % exc,
         })
+        stream.release()
+        _clear_ingest(stream)
+        writer.close()
         with STATE.lock:
             STATE.mode = "idle"
         return
     hand_templates = hand_extractor = None
-    if c.get("hands", {}).get("enabled", False):
-        from src.hands import HandExtractor, load_hand_templates
+    try:
+        if c.get("hands", {}).get("enabled", False):
+            from src.hands import HandExtractor, load_hand_templates
 
-        hand_templates = load_hand_templates(c)
-        if hand_templates:
-            hand_extractor = HandExtractor(
-                model_path=c["hands"].get("model_path") or None,
-                min_confidence=c["hands"].get("min_confidence", 0.4),
-            )
+            hand_templates = load_hand_templates(c)
+            if hand_templates:
+                hand_extractor = HandExtractor(
+                    model_path=c["hands"].get("model_path") or None,
+                    min_confidence=c["hands"].get("min_confidence", 0.4),
+                )
+    except (FileNotFoundError, OSError, RuntimeError) as exc:
+        STATE.publish("live_error", {"message": "hand landmarker failed to load: %s" % exc})
+        stream.release()
+        _clear_ingest(stream)
+        writer.close()
+        with STATE.lock:
+            STATE.mode = "idle"
+        return
 
     # Calibrated background scale (see src.normalize.RunningBackground): without
     # this the demo always estimates spread from a cold running window, even
@@ -657,41 +674,56 @@ def _live_loop(c, camera_index, max_seconds):
                 background_scale = json.load(fh).get("background_scale")
 
     frame_buffer = store = None
-    if clips_enabled(c):
-        store = build_store(c)
-        base_horizon = 0.5 * float(c["w_base_sec"]) + c["smoothing_windows"] * c.stride_chunks * c["chunk_sec"] + 4.0
-        frame_buffer = FrameRetentionBuffer(
-            base_horizon_sec=base_horizon,
-            hard_ceiling_sec=store.max_clip_sec + 10.0,
-            jpeg_quality=c["clips"].get("jpeg_quality", 80),
-        )
-
-    detector = LiveDetector(
-        c, encoder, bank, tau_high, writer, on_event, session_id=session_id,
-        pose_templates=pose_templates, hand_templates=hand_templates,
-        background_scale=background_scale,
-    )
-    detector.frame_buffer = frame_buffer
-    detector.clip_store = store
-
-    STATE.publish("live_started", {
-        "session_id": session_id,
-        "classes": detector.class_names,
-        "streams": detector.active_streams,
-        "tau_high": tau_high,
-        "tau_high_source": tau_source,
-        "clips_enabled": store is not None,
-        "warmup_sec": detector.warmup_chunks * detector.chunk_sec,
-    })
-
+    detector = None
     t0 = time.time()
-    frame_interval = 1.0 / float(c["working_fps"])
-    next_frame_at = t0
-    buffer = []
-    chunk_index = 0
-    warmed = False
-
     try:
+        if clips_enabled(c):
+            store = build_store(c)
+            # Hold enough history for confirm_sec (hair) + pre_roll so clips
+            # still get lead-in after a delayed open.
+            max_confirm = max(
+                (float(c.class_cfg(n).get("confirm_sec", 0.0)) for n in c.class_names),
+                default=0.0,
+            )
+            base_horizon = (
+                0.5 * float(c["w_base_sec"])
+                + c["smoothing_windows"] * c.stride_chunks * c["chunk_sec"]
+                + float(c.get("clips", {}).get("pre_roll_sec", 1.0))
+                + max_confirm
+                + 4.0
+            )
+            frame_buffer = FrameRetentionBuffer(
+                base_horizon_sec=base_horizon,
+                hard_ceiling_sec=store.max_clip_sec + 10.0 + max_confirm,
+                jpeg_quality=c["clips"].get("jpeg_quality", 80),
+            )
+
+        detector = LiveDetector(
+            c, encoder, bank, tau_high, writer, on_event, session_id=session_id,
+            pose_templates=pose_templates, hand_templates=hand_templates,
+            background_scale=background_scale,
+        )
+        detector.frame_buffer = frame_buffer
+        detector.clip_store = store
+
+        STATE.publish("live_started", {
+            "session_id": session_id,
+            "classes": detector.class_names,
+            "streams": detector.active_streams,
+            "tau_high": tau_high,
+            "tau_high_source": tau_source,
+            "clips_enabled": store is not None,
+            "warmup_sec": detector.warmup_chunks * detector.chunk_sec,
+            "source": source,
+        })
+
+        t0 = time.time()
+        frame_interval = 1.0 / float(c["working_fps"])
+        next_frame_at = t0
+        buffer = []
+        chunk_index = 0
+        warmed = False
+
         while not STATE.live_stop.is_set():
             if max_seconds is not None and (time.time() - t0) >= max_seconds:
                 break
@@ -750,17 +782,39 @@ def _live_loop(c, camera_index, max_seconds):
                         "chunks": chunk_index,
                         "warmup_chunks": detector.warmup_chunks,
                     })
+    except Exception as exc:  # noqa: BLE001
+        STATE.publish("live_error", {"message": "live loop crashed: %s" % exc})
     finally:
-        detector.flush(time.time() - t0)
-        writer.close()
-        stream.release()
+        if detector is not None:
+            try:
+                detector.flush(time.time() - t0)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            writer.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            stream.release()
+        except Exception:  # noqa: BLE001
+            pass
+        _clear_ingest(stream)
         for extractor in (pose_extractor, hand_extractor):
             if extractor is not None:
-                extractor.close()
+                try:
+                    extractor.close()
+                except Exception:  # noqa: BLE001
+                    pass
         if store is not None:
-            store.enforce_budget()
+            try:
+                store.enforce_budget()
+            except Exception:  # noqa: BLE001
+                pass
         if frame_buffer is not None:
-            frame_buffer.clear()
+            try:
+                frame_buffer.clear()
+            except Exception:  # noqa: BLE001
+                pass
         with STATE.lock:
             STATE.latest_frame_jpeg = None
             STATE.mode = "idle"
@@ -768,19 +822,28 @@ def _live_loop(c, camera_index, max_seconds):
 
 
 @app.post("/api/live/start")
-def api_live_start(camera_index: Optional[int] = None, max_seconds: Optional[float] = None):
+def api_live_start(
+    camera_index: Optional[int] = None,
+    max_seconds: Optional[float] = None,
+    source: str = "browser",
+):
     c = cfg()
     if not os.path.exists(bank_path(c)):
         raise HTTPException(409, "no prototype bank yet -- add at least one reference clip first")
+    source = (source or "browser").strip().lower()
+    if source not in ("browser", "server"):
+        raise HTTPException(400, "source must be 'browser' or 'server'")
     with STATE.lock:
         if STATE.mode != "idle":
             raise HTTPException(409, "busy: current mode is %r" % STATE.mode)
         STATE.mode = "detecting"
         STATE.live_stop = threading.Event()
 
-    STATE.live_thread = threading.Thread(target=_live_loop, args=(c, camera_index, max_seconds), daemon=True)
+    STATE.live_thread = threading.Thread(
+        target=_live_loop, args=(c, camera_index, max_seconds, source), daemon=True
+    )
     STATE.live_thread.start()
-    return {"ok": True}
+    return {"ok": True, "source": source}
 
 
 @app.post("/api/live/stop")
@@ -789,6 +852,22 @@ def api_live_stop():
         if STATE.mode != "detecting":
             raise HTTPException(409, "not currently running a live test")
     STATE.live_stop.set()
+    return {"ok": True}
+
+
+@app.post("/api/frame")
+async def api_frame(request: Request):
+    """Accept one JPEG frame from the browser webcam while recording/detecting."""
+    with STATE.lock:
+        stream = STATE.ingest_stream
+        mode = STATE.mode
+    if stream is None or mode not in ("recording", "detecting"):
+        raise HTTPException(409, "not currently ingesting browser frames")
+    body = await request.body()
+    if not body:
+        raise HTTPException(400, "empty body")
+    if not stream.push_jpeg(body):
+        raise HTTPException(400, "could not decode JPEG frame")
     return {"ok": True}
 
 
@@ -1007,6 +1086,7 @@ def api_events():
 
 
 @app.get("/api/clip/{event_id}")
+@app.head("/api/clip/{event_id}")
 def api_clip(event_id: str):
     c = cfg()
     events = {e["event_id"]: e for e in read_events(c.path(c["event_log"]["path"]))}

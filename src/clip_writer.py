@@ -23,9 +23,9 @@ BYTES_PER_GB = 1024 ** 3
 
 
 # H.264 first. mp4v is MPEG-4 Part 2, which OpenCV writes happily and modern
-# QuickTime renders as a GREEN FRAME -- the data is fine (measured: normal pixel
-# statistics, decodes correctly through OpenCV), but the player cannot show it.
-# A clip nobody can watch is not a saved clip.
+# browsers / QuickTime cannot play (blank or green frame). OpenCV's "avc1" on
+# headless Linux often fails open (no V4L2 encoder), so live clips silently
+# fell back to mp4v and the gallery looked broken. Prefer PyAV libx264.
 CODECS = ("avc1", "mp4v")
 
 
@@ -33,6 +33,7 @@ def open_writer(path, fps, size, codecs=CODECS):
     """VideoWriter using the first codec this build can actually open.
 
     Returns (writer, codec). Raises if none work.
+    Prefer write_frames() for new code -- it uses browser-playable H.264.
     """
     import cv2
 
@@ -43,6 +44,55 @@ def open_writer(path, fps, size, codecs=CODECS):
         writer.release()
     raise RuntimeError(
         "no usable video codec for %s -- tried %s" % (path, ", ".join(codecs)))
+
+
+def _even(n):
+    n = int(n)
+    return n if n % 2 == 0 else n + 1
+
+
+def write_frames_h264(path, frames, fps, is_rgb=True):
+    """Write frames as browser-playable H.264/yuv420p via PyAV (libx264).
+
+    frames: iterable of HxWx3 uint8 arrays (RGB if is_rgb else BGR).
+    Returns path. Raises if libx264 is unavailable.
+    """
+    import av
+    import numpy as np
+
+    frames = list(frames)
+    if not frames:
+        raise ValueError("no frames")
+    height, width = frames[0].shape[:2]
+    out_w, out_h = _even(width), _even(height)
+
+    container = av.open(path, mode="w")
+    try:
+        rate = max(1, int(round(float(fps))) or 8)
+        stream = container.add_stream("libx264", rate=rate)
+        stream.width = out_w
+        stream.height = out_h
+        stream.pix_fmt = "yuv420p"
+        stream.options = {"crf": "23", "preset": "veryfast"}
+
+        for frame in frames:
+            if not is_rgb:
+                # BGR (OpenCV) -> RGB for VideoFrame
+                import cv2
+
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if frame.shape[1] != out_w or frame.shape[0] != out_h:
+                padded = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+                padded[: height, : width] = frame
+                frame = padded
+            video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+            for packet in stream.encode(video_frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    finally:
+        container.close()
+    return path
 
 
 class ClipStore:
@@ -111,19 +161,26 @@ class ClipStore:
 
 
 def write_frames(path, frames, fps):
-    """Write RGB uint8 frames to an mp4. Returns the path, or None if empty."""
-    import cv2
+    """Write RGB uint8 frames to an mp4. Returns the path, or None if empty.
 
+    Uses PyAV H.264 when available so the web gallery can play clips. Falls
+    back to OpenCV only if that fails (may produce mp4v that browsers reject).
+    """
     if not len(frames):
         return None
-    height, width = frames[0].shape[:2]
-    writer, _ = open_writer(path, fps, (width, height))
     try:
-        for frame in frames:
-            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-    finally:
-        writer.release()
-    return path
+        return write_frames_h264(path, frames, fps, is_rgb=True)
+    except Exception:
+        import cv2
+
+        height, width = frames[0].shape[:2]
+        writer, _ = open_writer(path, fps, (width, height))
+        try:
+            for frame in frames:
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        finally:
+            writer.release()
+        return path
 
 
 def extract_clips_from_video(video_path, requests, store, source_id, pre_roll=2.0, post_roll=2.0):
@@ -158,10 +215,10 @@ def extract_clips_from_video(video_path, requests, store, source_id, pre_roll=2.
         spans.append({"event_id": request["event_id"], "start": start, "end": end, "writer": None})
 
     written = {}
-    size = (
-        int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-    )
+    # Buffer BGR frames per span, then write H.264 once each span ends. Keeps
+    # one sequential pass over the source without OpenCV's unplayable mp4v.
+    for span in spans:
+        span["frames"] = []
 
     try:
         index = 0
@@ -172,18 +229,28 @@ def extract_clips_from_video(video_path, requests, store, source_id, pre_roll=2.
             t = index / fps
             index += 1
             for span in spans:
-                if not (span["start"] <= t <= span["end"]):
-                    continue
-                if span["writer"] is None:
-                    path = store.path_for(source_id, span["event_id"])
-                    span["writer"], _ = open_writer(path, fps, size)
-                    written[span["event_id"]] = path
-                span["writer"].write(frame)
+                if span["start"] <= t <= span["end"]:
+                    span["frames"].append(frame)
     finally:
-        for span in spans:
-            if span["writer"] is not None:
-                span["writer"].release()
         capture.release()
+
+    for span in spans:
+        if not span["frames"]:
+            continue
+        path = store.path_for(source_id, span["event_id"])
+        try:
+            write_frames_h264(path, span["frames"], fps, is_rgb=False)
+        except Exception:
+            writer, _ = open_writer(
+                path, fps, (span["frames"][0].shape[1], span["frames"][0].shape[0])
+            )
+            try:
+                for frame in span["frames"]:
+                    writer.write(frame)
+            finally:
+                writer.release()
+        written[span["event_id"]] = path
+        span["frames"] = []
 
     return written
 

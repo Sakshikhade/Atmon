@@ -179,6 +179,31 @@ def test_hysteresis_does_not_reopen_below_tau_high():
     assert opened is None and not tracker.is_open
 
 
+def test_confirm_sec_rejects_outlier_spike():
+    """A one-chunk spike above tau must not open when confirm_sec is set."""
+    tracker = HysteresisTracker("hair", 0.8, 0.68, confirm_sec=3.0)
+    opened, _ = tracker.step(0.0, 1.0, 0.95)
+    assert opened is None and not tracker.is_open
+    # Drop below tau -- pending streak is an outlier and resets.
+    opened, _ = tracker.step(1.0, 2.0, 0.5)
+    assert opened is None and tracker._pending_start is None
+    # Fresh streak shorter than confirm still waits.
+    opened, _ = tracker.step(2.0, 3.0, 0.9)
+    assert opened is None
+    opened, _ = tracker.step(3.0, 4.0, 0.92)
+    assert opened is None
+    opened, _ = tracker.step(4.0, 5.0, 0.91)
+    assert opened is not None
+    assert opened["start"] == pytest.approx(2.0)
+    assert tracker.is_open
+
+
+def test_confirm_sec_zero_still_opens_immediately():
+    tracker = HysteresisTracker("a", 0.8, 0.68, confirm_sec=0.0)
+    opened, _ = tracker.step(0.0, 1.0, 0.9)
+    assert opened is not None and opened["start"] == 0.0
+
+
 def test_class_tau_scale_raises_only_named_class():
     from src.scoring import class_tau
 

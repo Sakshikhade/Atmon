@@ -251,18 +251,27 @@ class HysteresisTracker:
     Incremental by construction: offline drives it over a whole score series,
     live drives it one chunk at a time as features arrive. Neither can see the
     future, so both produce the same events for the same input.
+
+    confirm_sec > 0 requires the score to stay above tau_high for that long
+    before opening. Single-chunk spikes (outliers) reset the pending window
+    and never fire; the eventual open stamps start at the first confirming
+    chunk so the real onset is kept.
     """
 
-    def __init__(self, class_name, tau_high, tau_low, max_open_sec=None):
+    def __init__(self, class_name, tau_high, tau_low, max_open_sec=None,
+                 confirm_sec=0.0):
         self.class_name = class_name
         self.tau_high = float(tau_high)
         self.tau_low = float(tau_low)
         self.max_open_sec = max_open_sec
+        self.confirm_sec = float(confirm_sec or 0.0)
 
         self.event_id = None
         self.start_sec = None
         self.peak_score = None
         self.last_score = 0.0
+        self._pending_start = None
+        self._pending_peak = None
 
     @property
     def is_open(self):
@@ -281,6 +290,11 @@ class HysteresisTracker:
         self.event_id = None
         self.start_sec = None
         self.peak_score = None
+        self._clear_pending()
+
+    def _clear_pending(self):
+        self._pending_start = None
+        self._pending_peak = None
 
     def step(self, start_sec, end_sec, score, allow_open=True):
         """Advance one time position.
@@ -299,16 +313,32 @@ class HysteresisTracker:
 
         if not self.is_open:
             if score > self.tau_high and allow_open:
-                self.event_id = new_event_id()
-                self.start_sec = float(start_sec)
-                self.peak_score = score
-                opened = {
-                    "event_id": self.event_id,
-                    "class": self.class_name,
-                    "start": self.start_sec,
-                    "end": None,
-                    "score": score,
-                }
+                if self._pending_start is None:
+                    self._pending_start = float(start_sec)
+                    self._pending_peak = score
+                else:
+                    self._pending_peak = max(self._pending_peak, score)
+
+                confirmed = (
+                    self.confirm_sec <= 0.0
+                    or (float(end_sec) - self._pending_start) >= self.confirm_sec
+                )
+                if confirmed:
+                    self.event_id = new_event_id()
+                    self.start_sec = float(self._pending_start)
+                    self.peak_score = float(self._pending_peak)
+                    self._clear_pending()
+                    opened = {
+                        "event_id": self.event_id,
+                        "class": self.class_name,
+                        "start": self.start_sec,
+                        "end": None,
+                        "score": self.peak_score,
+                    }
+            elif score <= self.tau_high:
+                # Drop below open bar -> treat the prior streak as an outlier.
+                self._clear_pending()
+            # score still high but allow_open False: keep pending, do not open.
             return opened, closed
 
         self.peak_score = max(self.peak_score, score)
@@ -329,6 +359,7 @@ class HysteresisTracker:
 
     def flush(self, end_sec):
         """Close whatever is still open at the end of a stream."""
+        self._clear_pending()
         if not self.is_open:
             return None
         closed = self._event(end_sec, self.peak_score)
@@ -399,7 +430,8 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None):
     for ci, name in enumerate(class_names):
         series = smooth(grid[ci], cfg["smoothing_windows"])
         th, tl = class_tau(cfg, name, tau_high)
-        tracker = HysteresisTracker(name, th, tl)
+        confirm = float(cfg.class_cfg(name).get("confirm_sec", 0.0))
+        tracker = HysteresisTracker(name, th, tl, confirm_sec=confirm)
         for t, score in enumerate(series):
             start_sec = float(starts[t])
             _, closed = tracker.step(start_sec, start_sec + chunk_sec, score)

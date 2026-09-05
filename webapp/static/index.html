@@ -272,6 +272,7 @@
     background: #111;
     display: none;
   }
+  video.preview { transform: scaleX(-1); }
   .preview.record { max-width: 420px; }
   .preview-slot {
     position: relative;
@@ -300,6 +301,7 @@
     line-height: 1.4;
   }
   .preview-slot.is-live .preview-placeholder { display: none; }
+  .preview-slot.is-live video.preview { display: block; }
 
   .status {
     font-size: 0.86rem;
@@ -409,10 +411,9 @@
       <div class="panel-head">
         <div>
           <h2 id="live-title">Live</h2>
-          <p class="hint">Detect against the webcam. Needs a built reference bank.</p>
+          <p class="hint">Detect using this device’s webcam. Needs a built reference bank.</p>
         </div>
         <div class="head-actions">
-          <input id="cameraIndexLive" class="cam" type="number" value="0" title="Camera index" aria-label="Live camera index" />
           <button id="liveStartBtn" class="primary" type="button">Start</button>
           <button id="liveStopBtn" class="danger" type="button" disabled>Stop</button>
         </div>
@@ -421,8 +422,8 @@
         <div class="stage-grid">
           <div class="stage-camera">
             <div class="preview-slot" id="livePreviewSlot">
-              <div class="preview-placeholder">Press Start to open the camera</div>
-              <img id="livePreview" class="preview live" alt="Live preview" />
+              <div class="preview-placeholder">Press Start to open this device’s camera</div>
+              <video id="livePreview" class="preview live" playsinline muted autoplay></video>
             </div>
             <div id="liveStatus" class="status"></div>
           </div>
@@ -458,7 +459,6 @@
               <option value="__new__">New use case…</option>
             </select>
             <input id="classNameInput" type="text" placeholder="new_name" style="display:none" autocomplete="off" />
-            <input id="cameraIndexRef" class="cam" type="number" value="0" title="Camera index" aria-label="Record camera index" />
           </div>
           <div class="controls" style="margin-bottom: 0.65rem;">
             <button id="recordStartBtn" class="primary" type="button">Record</button>
@@ -466,7 +466,7 @@
             <button id="recordCancelBtn" class="ghost" type="button" disabled>Cancel</button>
             <label class="file-btn">Upload<input id="uploadInput" type="file" accept="video/*" /></label>
           </div>
-          <img id="recordPreview" class="preview record" alt="Recording preview" />
+          <video id="recordPreview" class="preview record" playsinline muted autoplay></video>
           <div id="recordStatus" class="status"></div>
         </div>
       </section>
@@ -601,44 +601,94 @@
     setInterval(refreshState, 3000);
 
     let previewTimer = null;
-    function stopPreview() {
-      if (previewTimer) {
-        clearInterval(previewTimer);
-        previewTimer = null;
+    let mediaStream = null;
+    let framePumpTimer = null;
+    let frameCanvas = null;
+    const FRAME_INTERVAL_MS = 125; // ~8 fps, matches working_fps default
+
+    function stopFramePump() {
+      if (framePumpTimer) {
+        clearInterval(framePumpTimer);
+        framePumpTimer = null;
       }
     }
-    function startPreview(imgEl) {
-      imgEl.style.display = 'block';
-      if (imgEl.id === 'livePreview') {
+
+    function stopBrowserCamera() {
+      stopFramePump();
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((t) => t.stop());
+        mediaStream = null;
+      }
+      ['livePreview', 'recordPreview'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && el.srcObject) el.srcObject = null;
+      });
+    }
+
+    async function openBrowserCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('This browser cannot access a webcam (needs HTTPS + getUserMedia).');
+      }
+      stopBrowserCamera();
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      });
+      return mediaStream;
+    }
+
+    function showLocalPreview(videoEl) {
+      videoEl.srcObject = mediaStream;
+      videoEl.style.display = 'block';
+      if (videoEl.id === 'livePreview') {
         document.getElementById('livePreviewSlot').classList.add('is-live');
       }
-      stopPreview();
-      previewTimer = setInterval(async () => {
+      const play = videoEl.play();
+      if (play && play.catch) play.catch(() => {});
+    }
+
+    function hidePreview(videoEl) {
+      if (videoEl) {
+        videoEl.style.display = 'none';
+        videoEl.srcObject = null;
+        if (videoEl.id === 'livePreview') {
+          document.getElementById('livePreviewSlot').classList.remove('is-live');
+        }
+      }
+      stopBrowserCamera();
+    }
+
+    function startFramePump() {
+      stopFramePump();
+      if (!frameCanvas) frameCanvas = document.createElement('canvas');
+      framePumpTimer = setInterval(async () => {
+        if (!mediaStream) return;
+        const track = mediaStream.getVideoTracks()[0];
+        if (!track || track.readyState !== 'live') return;
+        const videoEl =
+          document.getElementById('livePreview').srcObject ? document.getElementById('livePreview')
+          : document.getElementById('recordPreview').srcObject ? document.getElementById('recordPreview')
+          : null;
+        if (!videoEl || videoEl.readyState < 2) return;
+        const w = videoEl.videoWidth || 640;
+        const h = videoEl.videoHeight || 480;
+        if (frameCanvas.width !== w) frameCanvas.width = w;
+        if (frameCanvas.height !== h) frameCanvas.height = h;
+        const ctx = frameCanvas.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, w, h);
+        const blob = await new Promise((resolve) => frameCanvas.toBlob(resolve, 'image/jpeg', 0.7));
+        if (!blob) return;
         try {
-          const res = await fetch('/api/preview.jpg?t=' + Date.now());
-          if (!res.ok || res.status === 204) return;
-          const blob = await res.blob();
-          if (!blob || blob.size === 0) return;
-          const url = URL.createObjectURL(blob);
-          const prev = imgEl.dataset.blobUrl;
-          imgEl.src = url;
-          imgEl.dataset.blobUrl = url;
-          if (prev) URL.revokeObjectURL(prev);
+          await fetch('/api/frame', {
+            method: 'POST',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: blob,
+          });
         } catch (_) {}
-      }, 120);
+      }, FRAME_INTERVAL_MS);
     }
-    function hidePreview(imgEl) {
-      stopPreview();
-      imgEl.style.display = 'none';
-      if (imgEl.dataset.blobUrl) {
-        URL.revokeObjectURL(imgEl.dataset.blobUrl);
-        delete imgEl.dataset.blobUrl;
-      }
-      imgEl.removeAttribute('src');
-      if (imgEl.id === 'livePreview') {
-        document.getElementById('livePreviewSlot').classList.remove('is-live');
-      }
-    }
+
+    function startPreview(videoEl) { showLocalPreview(videoEl); startFramePump(); }
 
     const recordStatus = document.getElementById('recordStatus');
     const liveStatus = document.getElementById('liveStatus');
@@ -658,18 +708,20 @@
         setStatus(recordStatus, 'Pick or name a use case first.', 'err');
         return;
       }
-      const cam = document.getElementById('cameraIndexRef').value || '0';
       try {
+        setStatus(recordStatus, 'Opening camera…');
+        await openBrowserCamera();
         if (document.getElementById('classSelect').value === '__new__') {
           await post('/api/classes?class_name=' + encodeURIComponent(name));
         }
-        await post('/api/record/start?class_name=' + encodeURIComponent(name) + '&camera_index=' + encodeURIComponent(cam));
+        await post('/api/record/start?class_name=' + encodeURIComponent(name) + '&source=browser');
         document.getElementById('recordStartBtn').disabled = true;
         document.getElementById('recordStopBtn').disabled = false;
         document.getElementById('recordCancelBtn').disabled = false;
         startPreview(document.getElementById('recordPreview'));
         setStatus(recordStatus, 'Recording…');
       } catch (err) {
+        stopBrowserCamera();
         setStatus(recordStatus, String(err.message || err), 'err');
       }
     };
@@ -734,14 +786,16 @@
     };
 
     document.getElementById('liveStartBtn').onclick = async () => {
-      const cam = document.getElementById('cameraIndexLive').value || '0';
       try {
-        await post('/api/live/start?camera_index=' + encodeURIComponent(cam));
+        setStatus(liveStatus, 'Opening camera…');
+        await openBrowserCamera();
+        await post('/api/live/start?source=browser');
         document.getElementById('liveStartBtn').disabled = true;
         document.getElementById('liveStopBtn').disabled = false;
         startPreview(document.getElementById('livePreview'));
         setStatus(liveStatus, 'Starting…');
       } catch (err) {
+        stopBrowserCamera();
         setStatus(liveStatus, String(err.message || err), 'err');
       }
     };
@@ -752,6 +806,7 @@
       } catch (err) {
         setStatus(liveStatus, String(err.message || err), 'err');
       }
+      hidePreview(document.getElementById('livePreview'));
     };
 
     async function deleteClip(eventId) {

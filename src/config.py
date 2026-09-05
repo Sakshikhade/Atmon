@@ -124,7 +124,7 @@ def load_config(path="config.yaml", w_base_sec=None):
     # monitored person is opt-in, never something a missing config key turns on.
     raw["clips"].setdefault("enabled", False)
     raw["clips"].setdefault("dir", "data/clips")
-    raw["clips"].setdefault("pre_roll_sec", 2.0)
+    raw["clips"].setdefault("pre_roll_sec", 1.0)
     raw["clips"].setdefault("post_roll_sec", 2.0)
     raw["clips"].setdefault("max_clip_sec", 60)
     raw["clips"].setdefault("max_total_gb", 5.0)

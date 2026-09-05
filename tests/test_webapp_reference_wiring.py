@@ -144,7 +144,7 @@ def test_live_loop_reports_systemexit_and_resets_mode(workspace, monkeypatch):
     server_mod.STATE.mode = "detecting"
     server_mod.STATE.subscribers = [q]
 
-    server_mod._live_loop(cfg, camera_index=0, max_seconds=1.0)
+    server_mod._live_loop(cfg, camera_index=0, max_seconds=1.0, source="server")
 
     assert server_mod.STATE.mode == "idle"
     kinds = [m["kind"] for m in _drain(q)]

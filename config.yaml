@@ -110,7 +110,7 @@ hands:
 clips:
   enabled: true
   dir: data/clips
-  pre_roll_sec: 2.0                 # context kept before the detected start
+  pre_roll_sec: 1.0                 # context kept before the detected start
   post_roll_sec: 2.0                # ...and after the end
   max_clip_sec: 60                  # longer events are truncated
   max_total_gb: 5.0                 # oldest clips deleted past this
@@ -209,6 +209,9 @@ classes:
     # class so idle face/hand motion and ear→hair handoffs need a clearer hit.
     # head_nodding / ear_cover stay at the global tau.
     tau_scale: 2.0                  # effective tau_high = 3.0 sigma
+    # Require ~3s above tau before opening. Kills single-chunk outliers /
+    # brief face-near motion that looked like hair without sustained action.
+    confirm_sec: 3.0
 
   head_nodding:
     allow_flip: false
