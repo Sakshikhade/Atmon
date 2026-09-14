@@ -316,7 +316,20 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
             from src.event_storage import utcnow_iso
             ended_at = body.get("ended_at") or utcnow_iso()
-            event_ids = body.get("event_ids") or []
+            event_ids = list(body.get("event_ids") or [])
+
+            # Auto-link any events from EventStorage that occurred during this session window
+            existing_rec = fs.get_recording(rec_id, account["household_id"])
+            if existing_rec and self.server_storage:
+                started_at = existing_rec.get("started_at")
+                if started_at:
+                    detected = self.server_storage.get_episodes(
+                        from_time=started_at, to_time=ended_at, limit=1000
+                    )
+                    auto_ids = [e["id"] for e in detected]
+                    # Merge client-supplied IDs with auto-detected IDs, deduplicated
+                    event_ids = list(dict.fromkeys(event_ids + auto_ids))
+
             ok = fs.stop_recording(rec_id, ended_at, event_ids)
             if not ok:
                 self._send_json({"error": "Recording not found"}, status=HTTPStatus.NOT_FOUND)
@@ -589,6 +602,12 @@ def main():
         help="Path to SQLite database (default: data/outbox.db)",
     )
     parser.add_argument(
+        "--family-db-path",
+        type=str,
+        default="data/family.db",
+        help="Path to family app SQLite database (default: data/family.db)",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -601,7 +620,7 @@ def main():
     env = load_environment()
     print_env_banner(env)
 
-    run_server(host=args.host, port=args.port, db_path=args.db_path)
+    run_server(host=args.host, port=args.port, db_path=args.db_path, family_db_path=args.family_db_path)
 
 
 if __name__ == "__main__":
