@@ -1,8 +1,8 @@
-"""Standalone Python HTTP server and REST API for AAMAS dashboard.
+"""Standalone Python HTTP server and REST API for AAMAS dashboard and family app.
 
 Serves the single-file HTML dashboard and provides JSON REST API endpoints
-for recorded behavior episodes, statistics, and skeleton replay coordinates
-stored in `data/outbox.db`.
+for recorded behavior episodes, statistics, skeleton replay, and the family app
+(accounts, consent, recordings, clinician shares, privacy settings).
 
 Usage:
     python -m src.server --port 8000
@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.env_config import load_environment, print_env_banner
 from src.event_storage import EventStorage
+from src.family_store import FEATURE_HOME_CAMERA_PHASE2, FamilyStore
 from src.logging_config import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -28,22 +29,31 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for AAMAS dashboard and REST API."""
+    """HTTP request handler for AAMAS dashboard, REST API, and family app."""
 
     server_storage: EventStorage = None  # Bound at server startup
+    family_store: FamilyStore = None     # Bound at server startup
 
     def _set_headers(
-        self, content_type: str = "application/json", status: int = HTTPStatus.OK
+        self,
+        content_type: str = "application/json",
+        status: int = HTTPStatus.OK,
+        extra_headers: dict | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
 
     def do_OPTIONS(self) -> None:
         self._set_headers(status=HTTPStatus.NO_CONTENT)
+
+    # ── GET ──────────────────────────────────────────────────────────────────
 
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
@@ -55,27 +65,32 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._serve_file(os.path.join(STATIC_DIR, "index.html"), "text/html; charset=utf-8")
             return
 
-        # 2. Static files
+        # 2. Family app UI
+        if path == "/family" or path == "/family.html":
+            self._serve_file(os.path.join(STATIC_DIR, "family.html"), "text/html; charset=utf-8")
+            return
+
+        # 3. Static files
         if path.startswith("/static/"):
-            rel_path = path[len("/static/") :]
+            rel_path = path[len("/static/"):]
             file_path = os.path.join(STATIC_DIR, rel_path)
             content_type, _ = mimetypes.guess_type(file_path)
             self._serve_file(file_path, content_type or "application/octet-stream")
             return
 
-        # 3. REST API - Statistics
+        # 4. REST API - Statistics
         if path == "/api/stats":
             self._handle_stats()
             return
 
-        # 4. REST API - Episodes list
+        # 5. REST API - Episodes list
         if path == "/api/episodes":
             self._handle_episodes_list(query_params)
             return
 
-        # 5. REST API - Single episode with snapshot
+        # 6. REST API - Single episode with snapshot
         if path.startswith("/api/episodes/"):
-            episode_id_str = path[len("/api/episodes/") :]
+            episode_id_str = path[len("/api/episodes/"):]
             try:
                 episode_id = int(episode_id_str)
                 self._handle_single_episode(episode_id)
@@ -83,8 +98,364 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Invalid episode ID"}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        # 7. Family API (GET)
+        if path.startswith("/api/family/"):
+            self._route_family_get(path, query_params)
+            return
+
         # 404 Not Found
         self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    # ── POST / PUT / DELETE ───────────────────────────────────────────────────
+
+    def do_POST(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+        if path.startswith("/api/family/"):
+            self._route_family_post(path)
+            return
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_PUT(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+        if path.startswith("/api/family/"):
+            self._route_family_put(path)
+            return
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
+        if path.startswith("/api/family/"):
+            self._route_family_delete(path)
+            return
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    # ── Family routing ───────────────────────────────────────────────────────
+
+    def _route_family_get(self, path: str, params: dict) -> None:
+        fs = self.family_store
+        if fs is None:
+            self._send_json({"error": "Family store not initialised"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+
+        # /api/family/auth/me
+        if path == "/api/family/auth/me":
+            account = self._require_auth()
+            if account:
+                self._send_json(account)
+            return
+
+        # /api/family/household
+        if path == "/api/family/household":
+            account = self._require_auth()
+            if not account:
+                return
+            hh = fs.get_household(account["household_id"])
+            self._send_json(hh or {})
+            return
+
+        # /api/family/consent
+        if path == "/api/family/consent":
+            account = self._require_auth()
+            if not account:
+                return
+            self._send_json(fs.get_consent(account["household_id"]))
+            return
+
+        # /api/family/recordings
+        if path == "/api/family/recordings":
+            account = self._require_auth()
+            if not account:
+                return
+            self._send_json(fs.get_recordings(account["household_id"]))
+            return
+
+        # /api/family/recordings/{id}
+        if path.startswith("/api/family/recordings/"):
+            account = self._require_auth()
+            if not account:
+                return
+            rec_id = self._parse_int_segment(path, "/api/family/recordings/")
+            if rec_id is None:
+                return
+            rec = fs.get_recording(rec_id, account["household_id"])
+            if not rec:
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            # Attach behavior events from event_storage if available
+            events = []
+            if self.server_storage and rec.get("event_ids"):
+                for eid in rec["event_ids"]:
+                    ev = self.server_storage.get_episode(eid)
+                    if ev:
+                        events.append(ev)
+            rec["events"] = events
+            self._send_json(rec)
+            return
+
+        # /api/family/shares
+        if path == "/api/family/shares":
+            account = self._require_auth()
+            if not account:
+                return
+            self._send_json(fs.get_shares(account["household_id"]))
+            return
+
+        # /api/family/clinician/review/{token}  — no auth required, token is the credential
+        if path.startswith("/api/family/clinician/review/"):
+            token = path[len("/api/family/clinician/review/"):]
+            share = fs.get_share_by_token(token)
+            if not share:
+                self._send_json({"error": "Invalid or expired share link"}, status=HTTPStatus.NOT_FOUND)
+                return
+            result: dict = {"share": share}
+            if share.get("recording_id") and fs:
+                rec = fs.get_recording(share["recording_id"])
+                if rec:
+                    events = []
+                    if self.server_storage and rec.get("event_ids"):
+                        for eid in rec["event_ids"]:
+                            ev = self.server_storage.get_episode(eid)
+                            if ev:
+                                events.append(ev)
+                    rec["events"] = events
+                    result["recording"] = rec
+            self._send_json(result)
+            return
+
+        # /api/family/privacy
+        if path == "/api/family/privacy":
+            account = self._require_auth()
+            if not account:
+                return
+            self._send_json(fs.get_privacy_settings(account["household_id"]) or {})
+            return
+
+        # /api/family/features
+        if path == "/api/family/features":
+            self._send_json({"home_camera_phase2": FEATURE_HOME_CAMERA_PHASE2})
+            return
+
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _route_family_post(self, path: str) -> None:
+        fs = self.family_store
+        if fs is None:
+            self._send_json({"error": "Family store not initialised"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+
+        body = self._read_json_body()
+
+        # /api/family/auth/login
+        if path == "/api/family/auth/login":
+            if not body:
+                self._send_json({"error": "Missing body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            result = fs.login(body.get("email", ""), body.get("pin", ""))
+            if not result:
+                self._send_json({"error": "Invalid credentials"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            self._send_json(result, status=HTTPStatus.OK)
+            return
+
+        # /api/family/auth/logout
+        if path == "/api/family/auth/logout":
+            token = self._extract_token()
+            if token:
+                fs.logout(token)
+            self._send_json({"ok": True})
+            return
+
+        # /api/family/consent
+        if path == "/api/family/consent":
+            account = self._require_auth()
+            if not account:
+                return
+            if not body:
+                self._send_json({"error": "Missing body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            updated = fs.update_consent(
+                account["household_id"],
+                body.get("type", ""),
+                body.get("status", ""),
+                account["id"],
+            )
+            if not updated:
+                self._send_json({"error": "Invalid consent type or status"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json(updated, status=HTTPStatus.OK)
+            return
+
+        # /api/family/capture/start
+        if path == "/api/family/capture/start":
+            account = self._require_auth()
+            if not account:
+                return
+            if not body:
+                body = {}
+            from src.event_storage import utcnow_iso
+            started_at = body.get("started_at") or utcnow_iso()
+            label = body.get("label")
+            rec_id = fs.create_recording(account["household_id"], label, started_at)
+            self._send_json({"recording_id": rec_id, "started_at": started_at}, status=HTTPStatus.CREATED)
+            return
+
+        # /api/family/capture/stop
+        if path == "/api/family/capture/stop":
+            account = self._require_auth()
+            if not account:
+                return
+            if not body:
+                self._send_json({"error": "Missing body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            rec_id = body.get("recording_id")
+            if not isinstance(rec_id, int):
+                self._send_json({"error": "recording_id required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            from src.event_storage import utcnow_iso
+            ended_at = body.get("ended_at") or utcnow_iso()
+            event_ids = body.get("event_ids") or []
+            ok = fs.stop_recording(rec_id, ended_at, event_ids)
+            if not ok:
+                self._send_json({"error": "Recording not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            rec = fs.get_recording(rec_id, account["household_id"])
+            self._send_json(rec or {}, status=HTTPStatus.OK)
+            return
+
+        # /api/family/shares
+        if path == "/api/family/shares":
+            account = self._require_auth()
+            if not account:
+                return
+            if not body:
+                self._send_json({"error": "Missing body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            clinician_name = body.get("clinician_name", "").strip()
+            clinician_email = body.get("clinician_email", "").strip()
+            if not clinician_name or not clinician_email:
+                self._send_json({"error": "clinician_name and clinician_email required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            share = fs.create_share(
+                household_id=account["household_id"],
+                recording_id=body.get("recording_id"),
+                clinician_name=clinician_name,
+                clinician_email=clinician_email,
+                account_id=account["id"],
+                notes=body.get("notes"),
+                expires_days=body.get("expires_days"),
+            )
+            self._send_json(share, status=HTTPStatus.CREATED)
+            return
+
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _route_family_put(self, path: str) -> None:
+        fs = self.family_store
+        if fs is None:
+            self._send_json({"error": "Family store not initialised"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+
+        body = self._read_json_body()
+
+        # /api/family/privacy
+        if path == "/api/family/privacy":
+            account = self._require_auth()
+            if not account:
+                return
+            if not body:
+                self._send_json({"error": "Missing body"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            updated = fs.update_privacy_settings(
+                account["household_id"],
+                retention_days=body.get("retention_days"),
+                auto_delete_enabled=body.get("auto_delete_enabled"),
+                allow_clinician_replay=body.get("allow_clinician_replay"),
+            )
+            self._send_json(updated or {}, status=HTTPStatus.OK)
+            return
+
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _route_family_delete(self, path: str) -> None:
+        fs = self.family_store
+        if fs is None:
+            self._send_json({"error": "Family store not initialised"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+
+        # /api/family/recordings/{id}
+        if path.startswith("/api/family/recordings/"):
+            account = self._require_auth()
+            if not account:
+                return
+            rec_id = self._parse_int_segment(path, "/api/family/recordings/")
+            if rec_id is None:
+                return
+            ok = fs.delete_recording(rec_id, account["household_id"])
+            if not ok:
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True})
+            return
+
+        # /api/family/shares/{id}
+        if path.startswith("/api/family/shares/"):
+            account = self._require_auth()
+            if not account:
+                return
+            share_id = self._parse_int_segment(path, "/api/family/shares/")
+            if share_id is None:
+                return
+            ok = fs.revoke_share(share_id, account["household_id"])
+            if not ok:
+                self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"ok": True})
+            return
+
+        self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    # ── Auth helpers ─────────────────────────────────────────────────────────
+
+    def _extract_token(self) -> str | None:
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+        return None
+
+    def _require_auth(self) -> dict | None:
+        token = self._extract_token()
+        if not token:
+            self._send_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+        account = self.family_store.resolve_session(token)
+        if not account:
+            self._send_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+        return account
+
+    # ── Utility helpers ───────────────────────────────────────────────────────
+
+    def _read_json_body(self) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length == 0:
+                return {}
+            raw = self.rfile.read(length)
+            return json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            logger.warning("Failed to parse request body: %s", e)
+            return None
+
+    def _parse_int_segment(self, path: str, prefix: str) -> int | None:
+        segment = path[len(prefix):]
+        try:
+            return int(segment)
+        except ValueError:
+            self._send_json({"error": "Invalid ID"}, status=HTTPStatus.BAD_REQUEST)
+            return None
 
     def _serve_file(self, file_path: str, content_type: str) -> None:
         if not os.path.isfile(file_path):
@@ -170,10 +541,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         logger.debug("%s - - [%s] %s", self.address_string(), self.log_date_time_string(), format % args)
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8000, db_path: str = "data/outbox.db") -> None:
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    db_path: str = "data/outbox.db",
+    family_db_path: str = "data/family.db",
+) -> None:
     """Start and run the HTTP server."""
     storage = EventStorage(db_path=db_path)
+    family_store = FamilyStore(db_path=family_db_path)
     DashboardRequestHandler.server_storage = storage
+    DashboardRequestHandler.family_store = family_store
 
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, DashboardRequestHandler)
