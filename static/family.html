@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Atmos Family</title>
+<style>
+/* ── Design tokens ────────────────────────────────────────────────────── */
+:root {
+  --bg:        #0d1117;
+  --surface:   #161b22;
+  --border:    #30363d;
+  --muted:     #8b949e;
+  --text:      #e6edf3;
+  --primary:   #58a6ff;
+  --success:   #3fb950;
+  --warning:   #d29922;
+  --danger:    #f85149;
+  --radius:    12px;
+  --font:      -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 16px; }
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+.app { display: flex; flex-direction: column; height: 100%; max-width: 480px; margin: 0 auto; }
+.screen { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+.screen.active { display: flex; }
+.scroll { flex: 1; overflow-y: auto; padding: 16px; }
+.nav-bar { display: flex; border-top: 1px solid var(--border); background: var(--surface); }
+.nav-btn { flex: 1; padding: 12px 4px 10px; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 3px; transition: color .15s; }
+.nav-btn.active, .nav-btn:hover { color: var(--primary); }
+.nav-icon { font-size: 20px; line-height: 1; }
+
+/* ── Topbar ─────────────────────────────────────────────────────────── */
+.topbar { display: flex; align-items: center; gap: 10px; padding: 14px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.topbar h1 { font-size: 18px; font-weight: 600; flex: 1; }
+.topbar .badge { background: var(--primary); color: #000; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.card-title { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 18px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: #000; }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-ghost   { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-block   { width: 100%; }
+.btn-sm      { padding: 6px 12px; font-size: 13px; }
+
+/* ── Form elements ──────────────────────────────────────────────────── */
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+input[type=text], input[type=email], input[type=password], input[type=number], select, textarea {
+  width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); font-size: 15px; outline: none;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+.form-group { margin-bottom: 14px; }
+.form-row { display: flex; gap: 10px; }
+.form-row .form-group { flex: 1; }
+
+/* ── Tags / pills ───────────────────────────────────────────────────── */
+.pill { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+.pill-pending  { background: #2a2500; color: var(--warning); }
+.pill-active   { background: #112214; color: var(--success); }
+.pill-withdrawn{ background: #240c0c; color: var(--danger); }
+.pill-revoked  { background: #1e1e1e; color: var(--muted); }
+
+/* ── List items ─────────────────────────────────────────────────────── */
+.list-item { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.list-item:last-child { border-bottom: none; }
+.list-icon { font-size: 24px; flex-shrink: 0; }
+.list-body { flex: 1; min-width: 0; }
+.list-title { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.list-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ── Capture button ─────────────────────────────────────────────────── */
+.capture-ring { display: flex; align-items: center; justify-content: center; margin: 24px auto; }
+.capture-btn { width: 88px; height: 88px; border-radius: 50%; background: var(--danger); border: 4px solid #fff2; cursor: pointer; transition: transform .1s, box-shadow .15s; box-shadow: 0 0 0 0 rgba(248,81,73,.4); }
+.capture-btn.recording { animation: pulse 1.4s infinite; box-shadow: 0 0 0 12px rgba(248,81,73,0); }
+.capture-btn:active { transform: scale(.94); }
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(248,81,73,.5)} 50%{box-shadow:0 0 0 20px rgba(248,81,73,0)} }
+.capture-label { text-align: center; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.capture-timer { text-align: center; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 4px; min-height: 38px; }
+
+/* ── Consent gate ───────────────────────────────────────────────────── */
+.consent-gate { background: #1a1200; border: 1px solid var(--warning); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.consent-gate p { font-size: 14px; line-height: 1.5; color: var(--text); margin-bottom: 12px; }
+
+/* ── Playback skeleton ──────────────────────────────────────────────── */
+.skeleton-wrap { background: var(--bg); border-radius: 8px; overflow: hidden; margin: 10px 0; }
+canvas#pb-canvas { width: 100%; display: block; }
+.playback-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.playback-controls input[type=range] { flex: 1; }
+
+/* ── Phase-2 stub ───────────────────────────────────────────────────── */
+.phase2-stub { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px 16px; text-align: center; opacity: .6; }
+.phase2-stub h3 { margin-bottom: 6px; }
+
+/* ── Empty state ────────────────────────────────────────────────────── */
+.empty { text-align: center; padding: 40px 16px; color: var(--muted); }
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+
+/* ── Toast ──────────────────────────────────────────────────────────── */
+#toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(40px);
+  background: #333; color: #fff; padding: 10px 18px; border-radius: 8px; font-size: 14px;
+  opacity: 0; transition: all .25s; pointer-events: none; white-space: nowrap; z-index: 999; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── Onboarding / login ─────────────────────────────────────────────── */
+#screen-login { align-items: center; justify-content: center; padding: 32px 24px; }
+.login-logo { font-size: 64px; margin-bottom: 8px; }
+.login-brand { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+.login-tagline { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+.trust-copy { font-size: 13px; color: var(--muted); text-align: center; margin-top: 20px; line-height: 1.6; }
+
+/* ── Clinician review ────────────────────────────────────────────────── */
+.review-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 20px 16px; text-align: center; }
+.review-header h2 { margin-bottom: 4px; }
+.review-header p { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="toast"></div>
+
+<!-- ══════════════════════ CLINICIAN REVIEW MODE ══════════════════════ -->
+<!-- Rendered when URL contains ?share=TOKEN; replaces entire app UI -->
+<div id="clinician-review" style="display:none; max-width:680px; margin:0 auto;">
+  <div class="review-header">
+    <div style="font-size:40px;margin-bottom:6px;">🩺</div>
+    <h2>Clinician Review</h2>
+    <p id="cr-share-info"></p>
+  </div>
+  <div style="padding:16px;" id="cr-body">
+    <div class="empty"><div class="empty-icon">⏳</div><p>Loading…</p></div>
+  </div>
+</div>
+
+<!-- ══════════════════════ MAIN APP ══════════════════════════════════ -->
+<div class="app" id="main-app">
+
+  <!-- ── LOGIN ───────────────────────────────────────────────────────── -->
+  <div class="screen active" id="screen-login">
+    <div class="login-logo">🏠</div>
+    <div class="login-brand">Atmos Family</div>
+    <div class="login-tagline">Private. Secure. For your family.</div>
+    <form id="login-form" style="width:100%;">
+      <div class="form-group">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" value="guardian@family.local" autocomplete="username" required>
+      </div>
+      <div class="form-group">
+        <label for="login-pin">PIN</label>
+        <input id="login-pin" type="password" placeholder="4-digit PIN" maxlength="6" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign in</button>
+    </form>
+    <p class="trust-copy">No scores. No rankings. No data leaves your device without your consent.<br>Demo PIN: <strong>1234</strong></p>
+  </div>
+
+  <!-- ── HOME ────────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen-home">
+    <div class="topbar"><h1>Home</h1><span class="badge" id="home-role"></span></div>
+    <div class="scroll">
+
+      <!-- Consent gate -->
+      <div id="consent-gate" class="consent-gate" style="display:none;">
+        <strong style="font-size:15px;">Consent required before capturing</strong>
+        <p>Please complete consent setup in Settings before starting a recording session.</p>
+        <button class="btn btn-primary btn-sm" onclick="showScreen('screen-settings')">Go to Settings</button>
+      </div>
+
+      <!-- Capture UI -->
+      <div class="card">
+        <div class="card-title">Capture Session</div>
+        <div class="form-group">
+          <label for="cap-label">Session label (optional)</label>
+          <input id="cap-label" type="text" placeholder="e.g. Morning routine">
+        </div>
+        <div class="capture-ring">
+          <div>
+            <button id="cap-btn" class="capture-btn" title="Tap to start recording"></button>
+            <div class="capture-label" id="cap-label-text">Tap to start</div>
+            <div class="capture-timer" id="cap-timer"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Home-camera Phase-2 stub (hidden unless feature flag enabled) -->
+      <div id="phase2-section" style="display:none;" class="card">
+        <div class="card-title">Home Camera <span class="pill pill-pending" style="font-size:10px;vertical-align:middle;">Phase 2</span></div>
+        <div class="phase2-stub">
+          <div style="font-size:32px;margin-bottom:8px;">📷</div>
+          <h3>Ambient Camera Monitoring</h3>
+          <p style="font-size:13px;color:var(--muted);margin-top:6px;">Home-camera integration is coming in Phase 2. Enable the feature flag <code>FEATURE_HOME_CAMERA_PHASE2</code> to preview this interface.</p>
+        </div>
+      </div>
+
+      <!-- Quick stats -->
+      <div class="card" id="home-stats">
+        <div class="card-title">Recent Activity</div>
+        <div id="home-recent-list"><div class="empty" style="padding:16px 0;"><p>No recordings yet.</p></div></div>
+      </div>
+
+    </div>
+    <nav class="nav-bar" id="main-nav"></nav>
+  </div>
+
+  <!-- ── LIBRARY ──────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen-library">
+    <div class="topbar"><h1>Library</h1></div>
+    <div class="scroll" id="library-list">
+      <div class="empty"><div class="empty-icon">📼</div><p>No recordings yet.<br>Start a capture session on the Home screen.</p></div>
+    </div>
+    <nav class="nav-bar" id="library-nav"></nav>
+  </div>
+
+  <!-- ── PLAYBACK ─────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen-playback">
+    <div class="topbar">
+      <button class="btn btn-ghost btn-sm" onclick="showScreen('screen-library')">← Back</button>
+      <h1 id="pb-title" style="font-size:15px;">Recording</h1>
+    </div>
+    <div class="scroll">
+      <!-- Skeleton player -->
+      <div class="card">
+        <div class="card-title">Skeleton Replay</div>
+        <div class="skeleton-wrap">
+          <canvas id="pb-canvas" width="400" height="280"></canvas>
+        </div>
+        <div class="playback-controls">
+          <button class="btn btn-ghost btn-sm" id="pb-play-btn">▶</button>
+          <input type="range" id="pb-scrub" min="0" max="100" value="0">
+          <span id="pb-time" style="font-size:12px;color:var(--muted);width:50px;text-align:right;">0.0s</span>
+        </div>
+      </div>
+      <!-- Behavior log synced to playback -->
+      <div class="card">
+        <div class="card-title">Behavior Log</div>
+        <div id="pb-event-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SHARE ────────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen-share">
+    <div class="topbar"><h1>Share with Clinician</h1></div>
+    <div class="scroll">
+      <div class="card">
+        <div class="card-title">New Share</div>
+        <form id="share-form">
+          <div class="form-group">
+            <label for="sh-name">Clinician name</label>
+            <input id="sh-name" type="text" placeholder="Dr. Smith" required>
+          </div>
+          <div class="form-group">
+            <label for="sh-email">Clinician email</label>
+            <input id="sh-email" type="email" placeholder="dr.smith@clinic.org" required>
+          </div>
+          <div class="form-group">
+            <label for="sh-recording">Recording (leave blank to share all)</label>
+            <select id="sh-recording"><option value="">— All recordings —</option></select>
+          </div>
+          <div class="form-group">
+            <label for="sh-notes">Notes for clinician (optional)</label>
+            <textarea id="sh-notes" rows="3" placeholder="Context for this session…"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="sh-expires">Expires in (days, optional)</label>
+            <input id="sh-expires" type="number" min="1" max="365" placeholder="30">
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Create share link</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Active Shares</div>
+        <div id="shares-list"><div class="empty" style="padding:12px 0;"><p>No active shares.</p></div></div>
+      </div>
+    </div>
+    <nav class="nav-bar" id="share-nav"></nav>
+  </div>
+
+  <!-- ── SETTINGS ─────────────────────────────────────────────────────── -->
+  <div class="screen" id="screen-settings">
+    <div class="topbar"><h1>Settings</h1></div>
+    <div class="scroll">
+
+      <!-- Consent / assent / bystander gates -->
+      <div class="card">
+        <div class="card-title">Consent &amp; Assent</div>
+        <div id="consent-list"></div>
+        <p style="font-size:12px;color:var(--muted);margin-top:12px;">You can withdraw consent at any time. Withdrawing consent stops all future captures and triggers deletion of associated recordings.</p>
+      </div>
+
+      <!-- Privacy & retention -->
+      <div class="card">
+        <div class="card-title">Privacy &amp; Retention</div>
+        <form id="privacy-form">
+          <div class="form-group">
+            <label for="pr-days">Retention period (days)</label>
+            <input id="pr-days" type="number" min="7" max="730" value="90">
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+            <input id="pr-auto" type="checkbox" checked style="width:auto;cursor:pointer;">
+            <label for="pr-auto" style="margin:0;cursor:pointer;">Auto-delete after retention period</label>
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;">
+            <input id="pr-replay" type="checkbox" checked style="width:auto;cursor:pointer;">
+            <label for="pr-replay" style="margin:0;cursor:pointer;">Allow clinician to replay skeleton animation</label>
+          </div>
+          <button type="submit" class="btn btn-primary">Save privacy settings</button>
+        </form>
+      </div>
+
+      <!-- Data deletion -->
+      <div class="card">
+        <div class="card-title">Data</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">Delete all your recordings and behavior data. This cannot be undone.</p>
+        <button class="btn btn-danger btn-sm" id="btn-delete-all">Delete all data…</button>
+      </div>
+
+      <!-- Sign out -->
+      <div class="card">
+        <button class="btn btn-ghost btn-block" id="btn-signout">Sign out</button>
+      </div>
+
+    </div>
+    <nav class="nav-bar" id="settings-nav"></nav>
+  </div>
+
+</div><!-- /.app -->
+
+<script>
+/* ── State ───────────────────────────────────────────────────────────── */
+let token = null;
+let account = null;
+let captureState = { recording: false, id: null, startedAt: null, timerInterval: null };
+let pbState = { frames: [], fps: 10, currentIdx: 0, playing: false, rafId: null, events: [] };
+let featureFlags = { home_camera_phase2: false };
+
+const API = (path) => `/api/family${path}`;
+
+/* ── Fetch helpers ───────────────────────────────────────────────────── */
+async function apiFetch(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(API(path), { ...opts, headers });
+  if (res.status === 204) return null;
+  return res.json().then(data => ({ ok: res.ok, status: res.status, data }));
+}
+
+async function apiGet(path)       { return apiFetch(path); }
+async function apiPost(path, body){ return apiFetch(path, { method: 'POST', body: JSON.stringify(body) }); }
+async function apiPut(path, body) { return apiFetch(path, { method: 'PUT',  body: JSON.stringify(body) }); }
+async function apiDel(path)       { return apiFetch(path, { method: 'DELETE' }); }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+function toast(msg, durationMs = 2800) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), durationMs);
+}
+
+/* ── Screen navigation ───────────────────────────────────────────────── */
+const NAV_ITEMS = [
+  { id: 'home',     label: 'Home',    icon: '🏠', screen: 'screen-home' },
+  { id: 'library',  label: 'Library', icon: '📼', screen: 'screen-library' },
+  { id: 'share',    label: 'Share',   icon: '🔗', screen: 'screen-share' },
+  { id: 'settings', label: 'Settings',icon: '⚙️', screen: 'screen-settings' },
+];
+
+function buildNav(containerId, activeId) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = NAV_ITEMS.map(n => `
+    <button class="nav-btn ${n.id === activeId ? 'active' : ''}" onclick="navTo('${n.id}')">
+      <span class="nav-icon">${n.icon}</span>${n.label}
+    </button>`).join('');
+}
+
+function navTo(id) {
+  const item = NAV_ITEMS.find(n => n.id === id);
+  if (!item) return;
+  showScreen(item.screen, id);
+  if (id === 'library') loadLibrary();
+  if (id === 'share')   loadShares();
+  if (id === 'settings') loadSettings();
+  if (id === 'home') loadHome();
+}
+
+function showScreen(screenId, navId) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const s = document.getElementById(screenId);
+  if (s) s.classList.add('active');
+  NAV_ITEMS.forEach(n => buildNav(`${n.id === (navId || screenId.replace('screen-', '')) ? '' : n.id + '-'}nav`, navId || screenId.replace('screen-', '')));
+  ['home-nav', 'library-nav', 'share-nav', 'settings-nav'].forEach(id => buildNav(id, navId || screenId.replace('screen-', '')));
+}
+
+/* ── Auth ────────────────────────────────────────────────────────────── */
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  const email = document.getElementById('login-email').value;
+  const pin   = document.getElementById('login-pin').value;
+  const res = await apiPost('/auth/login', { email, pin });
+  btn.disabled = false; btn.textContent = 'Sign in';
+  if (!res || !res.ok) { toast('Invalid email or PIN'); return; }
+  token   = res.data.token;
+  account = res.data.account;
+  await onLoginSuccess();
+});
+
+async function onLoginSuccess() {
+  const fl = await apiGet('/features');
+  if (fl && fl.ok) featureFlags = fl.data;
+  document.getElementById('home-role').textContent = account.role;
+  showScreen('screen-home', 'home');
+  ['home-nav','library-nav','share-nav','settings-nav'].forEach(id => buildNav(id, 'home'));
+  if (featureFlags.home_camera_phase2) document.getElementById('phase2-section').style.display = '';
+  await checkConsent();
+  await loadHome();
+}
+
+async function checkConsent() {
+  const res = await apiGet('/consent');
+  if (!res || !res.ok) return;
+  const consents = res.data;
+  const primary = consents.find(c => c.type === 'primary_consent');
+  const gate = document.getElementById('consent-gate');
+  if (primary && primary.status !== 'active') {
+    gate.style.display = '';
+  } else {
+    gate.style.display = 'none';
+  }
+}
+
+document.getElementById('btn-signout').addEventListener('click', async () => {
+  if (token) await apiPost('/auth/logout', {});
+  token = null; account = null;
+  showScreen('screen-login');
+  document.getElementById('login-pin').value = '';
+});
+
+/* ── Home / Capture ──────────────────────────────────────────────────── */
+async function loadHome() {
+  const res = await apiGet('/recordings');
+  if (!res || !res.ok) return;
+  const recs = res.data.slice(0, 5);
+  const el = document.getElementById('home-recent-list');
+  if (!recs.length) { el.innerHTML = '<div class="empty" style="padding:12px 0;"><p>No recordings yet.</p></div>'; return; }
+  el.innerHTML = recs.map(r => `
+    <div class="list-item" onclick="openPlayback(${r.id})" style="cursor:pointer;">
+      <div class="list-icon">📼</div>
+      <div class="list-body">
+        <div class="list-title">${r.label || 'Untitled session'}</div>
+        <div class="list-sub">${fmtDate(r.started_at)} · ${fmtDuration(r.duration_s)}</div>
+      </div>
+    </div>`).join('');
+}
+
+const capBtn = document.getElementById('cap-btn');
+capBtn.addEventListener('click', async () => {
+  if (captureState.recording) {
+    await stopCapture();
+  } else {
+    await startCapture();
+  }
+});
+
+async function startCapture() {
+  const label = document.getElementById('cap-label').value.trim() || null;
+  const res = await apiPost('/capture/start', { label });
+  if (!res || !res.ok) { toast('Failed to start capture'); return; }
+  captureState.recording = true;
+  captureState.id = res.data.recording_id;
+  captureState.startedAt = Date.now();
+  capBtn.classList.add('recording');
+  document.getElementById('cap-label-text').textContent = 'Recording… tap to stop';
+  captureState.timerInterval = setInterval(updateTimer, 500);
+}
+
+async function stopCapture() {
+  clearInterval(captureState.timerInterval);
+  const res = await apiPost('/capture/stop', { recording_id: captureState.id, event_ids: [] });
+  if (!res || !res.ok) { toast('Failed to stop capture'); }
+  captureState.recording = false;
+  captureState.id = null;
+  captureState.startedAt = null;
+  capBtn.classList.remove('recording');
+  document.getElementById('cap-label-text').textContent = 'Tap to start';
+  document.getElementById('cap-timer').textContent = '';
+  toast('Recording saved to library');
+  await loadHome();
+}
+
+function updateTimer() {
+  if (!captureState.startedAt) return;
+  const elapsed = Math.floor((Date.now() - captureState.startedAt) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('cap-timer').textContent = `${m}:${s}`;
+}
+
+/* ── Library ─────────────────────────────────────────────────────────── */
+async function loadLibrary() {
+  const res = await apiGet('/recordings');
+  const el = document.getElementById('library-list');
+  if (!res || !res.ok || !res.data.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">📼</div><p>No recordings yet.<br>Start a capture session on the Home screen.</p></div>';
+    return;
+  }
+  el.innerHTML = res.data.map(r => `
+    <div class="list-item">
+      <div class="list-icon" style="cursor:pointer;" onclick="openPlayback(${r.id})">📼</div>
+      <div class="list-body" style="cursor:pointer;" onclick="openPlayback(${r.id})">
+        <div class="list-title">${r.label || 'Untitled session'}</div>
+        <div class="list-sub">${fmtDate(r.started_at)} · ${fmtDuration(r.duration_s)}</div>
+      </div>
+      <div class="list-actions">
+        <button class="btn btn-danger btn-sm" onclick="deleteRecording(${r.id})">Delete</button>
+      </div>
+    </div>`).join('');
+}
+
+async function deleteRecording(id) {
+  if (!confirm('Delete this recording? This cannot be undone.')) return;
+  const res = await apiDel(`/recordings/${id}`);
+  if (!res || !res.ok) { toast('Failed to delete'); return; }
+  toast('Recording deleted');
+  loadLibrary();
+}
+
+/* ── Playback ────────────────────────────────────────────────────────── */
+async function openPlayback(recId) {
+  const res = await apiGet(`/recordings/${recId}`);
+  if (!res || !res.ok) { toast('Failed to load recording'); return; }
+  const rec = res.data;
+  document.getElementById('pb-title').textContent = rec.label || 'Recording';
+
+  // Gather all skeleton frames from linked events
+  const allFrames = [];
+  const events = rec.events || [];
+  for (const ev of events) {
+    if (ev.snapshot && ev.snapshot.frames) {
+      for (const f of ev.snapshot.frames) allFrames.push({ ...f, eventId: ev.id });
+    }
+  }
+
+  pbState = { frames: allFrames, fps: 10, currentIdx: 0, playing: false, rafId: null, events };
+  renderPbEventList(events);
+  pbRender();
+  showScreen('screen-playback');
+}
+
+function renderPbEventList(events) {
+  const el = document.getElementById('pb-event-list');
+  if (!events.length) {
+    el.innerHTML = '<div class="empty" style="padding:12px 0;"><p>No behavior events in this session.</p></div>';
+    return;
+  }
+  el.innerHTML = events.map(ev => `
+    <div class="list-item">
+      <div class="list-icon">🔎</div>
+      <div class="list-body">
+        <div class="list-title">${ev.type}${ev.subtype ? ' · ' + ev.subtype : ''}</div>
+        <div class="list-sub">${fmtDate(ev.started_at)} · ${fmtDuration(ev.duration_s)}</div>
+      </div>
+    </div>`).join('');
+}
+
+const pbCanvas = document.getElementById('pb-canvas');
+const pbCtx = pbCanvas.getContext('2d');
+const CONNECTIONS = [[0,2],[0,5],[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
+
+function pbRender() {
+  const { frames, currentIdx } = pbState;
+  const canvas = pbCanvas;
+  pbCtx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!frames.length) {
+    pbCtx.fillStyle = '#8b949e'; pbCtx.font = '14px sans-serif'; pbCtx.textAlign = 'center';
+    pbCtx.fillText('No skeleton data for this session', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  const frame = frames[currentIdx];
+  if (!frame) return;
+  const pts = {};
+  for (const p of (frame.points || [])) pts[p.i] = p;
+  const W = canvas.width, H = canvas.height;
+  pbCtx.strokeStyle = '#58a6ff'; pbCtx.lineWidth = 2;
+  for (const [a, b] of CONNECTIONS) {
+    if (pts[a] && pts[b]) {
+      pbCtx.beginPath();
+      pbCtx.moveTo(pts[a].x * W, pts[a].y * H);
+      pbCtx.lineTo(pts[b].x * W, pts[b].y * H);
+      pbCtx.stroke();
+    }
+  }
+  pbCtx.fillStyle = '#3fb950';
+  for (const p of Object.values(pts)) {
+    pbCtx.beginPath(); pbCtx.arc(p.x * W, p.y * H, 4, 0, Math.PI * 2); pbCtx.fill();
+  }
+  document.getElementById('pb-scrub').max = frames.length - 1;
+  document.getElementById('pb-scrub').value = currentIdx;
+  document.getElementById('pb-time').textContent = (frame.t || 0).toFixed(1) + 's';
+}
+
+document.getElementById('pb-play-btn').addEventListener('click', () => {
+  pbState.playing = !pbState.playing;
+  document.getElementById('pb-play-btn').textContent = pbState.playing ? '⏸' : '▶';
+  if (pbState.playing) pbAdvance();
+});
+
+function pbAdvance() {
+  if (!pbState.playing) return;
+  if (pbState.currentIdx >= pbState.frames.length - 1) {
+    pbState.currentIdx = 0;
+  } else {
+    pbState.currentIdx++;
+  }
+  pbRender();
+  pbState.rafId = setTimeout(pbAdvance, 1000 / pbState.fps);
+}
+
+document.getElementById('pb-scrub').addEventListener('input', (e) => {
+  pbState.currentIdx = parseInt(e.target.value);
+  pbRender();
+});
+
+/* ── Share ───────────────────────────────────────────────────────────── */
+async function loadShares() {
+  // Populate recording dropdown
+  const recRes = await apiGet('/recordings');
+  const sel = document.getElementById('sh-recording');
+  sel.innerHTML = '<option value="">— All recordings —</option>';
+  if (recRes && recRes.ok) {
+    for (const r of recRes.data) {
+      sel.innerHTML += `<option value="${r.id}">${r.label || 'Untitled · ' + fmtDate(r.started_at)}</option>`;
+    }
+  }
+  // Load active shares
+  const res = await apiGet('/shares');
+  const el = document.getElementById('shares-list');
+  if (!res || !res.ok || !res.data.length) {
+    el.innerHTML = '<div class="empty" style="padding:12px 0;"><p>No active shares.</p></div>';
+    return;
+  }
+  el.innerHTML = res.data.map(s => `
+    <div class="list-item">
+      <div class="list-icon">🩺</div>
+      <div class="list-body">
+        <div class="list-title">${s.clinician_name}</div>
+        <div class="list-sub">${s.clinician_email}${s.expires_at ? ' · Expires ' + fmtDate(s.expires_at) : ''}</div>
+        <div style="margin-top:4px;"><code style="font-size:11px;color:var(--muted);word-break:break-all;">…${s.share_token.slice(-10)}</code></div>
+      </div>
+      <div class="list-actions">
+        <button class="btn btn-danger btn-sm" onclick="revokeShare(${s.id})">Revoke</button>
+      </div>
+    </div>`).join('');
+}
+
+document.getElementById('share-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    clinician_name: document.getElementById('sh-name').value.trim(),
+    clinician_email: document.getElementById('sh-email').value.trim(),
+    notes: document.getElementById('sh-notes').value.trim() || null,
+    expires_days: parseInt(document.getElementById('sh-expires').value) || null,
+  };
+  const recId = document.getElementById('sh-recording').value;
+  if (recId) body.recording_id = parseInt(recId);
+  const res = await apiPost('/shares', body);
+  if (!res || !res.ok) { toast('Failed to create share'); return; }
+  toast('Share link created');
+  e.target.reset();
+  await loadShares();
+});
+
+async function revokeShare(id) {
+  if (!confirm('Revoke this share? The clinician will lose access immediately.')) return;
+  const res = await apiDel(`/shares/${id}`);
+  if (!res || !res.ok) { toast('Failed to revoke share'); return; }
+  toast('Share revoked');
+  await loadShares();
+}
+
+/* ── Settings ────────────────────────────────────────────────────────── */
+async function loadSettings() {
+  await Promise.all([loadConsentSettings(), loadPrivacySettings()]);
+}
+
+async function loadConsentSettings() {
+  const res = await apiGet('/consent');
+  if (!res || !res.ok) return;
+  const consents = res.data;
+  const labels = {
+    primary_consent: { title: 'Primary guardian consent', desc: 'You consent to capture and store behavioral session data for your child.' },
+    assent: { title: 'Child assent', desc: 'Your child understands and agrees to participate in session recording.' },
+    bystander_acknowledged: { title: 'Bystander acknowledgement', desc: 'Bystanders in the home have been informed that sessions may be recorded.' },
+  };
+  const el = document.getElementById('consent-list');
+  el.innerHTML = consents.map(c => {
+    const meta = labels[c.type] || { title: c.type, desc: '' };
+    return `
+      <div class="list-item">
+        <div class="list-body">
+          <div class="list-title">${meta.title}</div>
+          <div class="list-sub">${meta.desc}</div>
+          <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+            <span class="pill pill-${c.status}">${c.status}</span>
+            ${c.status !== 'active' ? `<button class="btn btn-primary btn-sm" onclick="updateConsent('${c.type}','active')">Grant</button>` : ''}
+            ${c.status === 'active' ? `<button class="btn btn-ghost btn-sm" onclick="updateConsent('${c.type}','withdrawn')">Withdraw</button>` : ''}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function updateConsent(type, status) {
+  const res = await apiPost('/consent', { type, status });
+  if (!res || !res.ok) { toast('Failed to update consent'); return; }
+  toast(`Consent ${status === 'active' ? 'granted' : 'withdrawn'}`);
+  await loadConsentSettings();
+  await checkConsent();
+}
+
+async function loadPrivacySettings() {
+  const res = await apiGet('/privacy');
+  if (!res || !res.ok) return;
+  const s = res.data;
+  document.getElementById('pr-days').value = s.retention_days || 90;
+  document.getElementById('pr-auto').checked = !!s.auto_delete_enabled;
+  document.getElementById('pr-replay').checked = !!s.allow_clinician_replay;
+}
+
+document.getElementById('privacy-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {
+    retention_days: parseInt(document.getElementById('pr-days').value),
+    auto_delete_enabled: document.getElementById('pr-auto').checked,
+    allow_clinician_replay: document.getElementById('pr-replay').checked,
+  };
+  const res = await apiPut('/privacy', body);
+  if (!res || !res.ok) { toast('Failed to save settings'); return; }
+  toast('Privacy settings saved');
+});
+
+document.getElementById('btn-delete-all').addEventListener('click', async () => {
+  if (!confirm('Delete ALL recordings and behavior data for this household? This cannot be undone.')) return;
+  const recRes = await apiGet('/recordings');
+  if (recRes && recRes.ok) {
+    for (const r of recRes.data) await apiDel(`/recordings/${r.id}`);
+  }
+  toast('All data deleted');
+  await loadHome();
+});
+
+/* ── Clinician review (share-token URL) ──────────────────────────────── */
+async function loadClinicianReview(shareToken) {
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('clinician-review').style.display = '';
+  const res = await apiGet(`/clinician/review/${shareToken}`);
+  const body = document.getElementById('cr-body');
+  if (!res || !res.ok) {
+    body.innerHTML = '<div class="empty"><div class="empty-icon">❌</div><p>This share link is invalid or has expired.</p></div>';
+    return;
+  }
+  const { share, recording } = res.data;
+  document.getElementById('cr-share-info').textContent = `Shared by household · ${fmtDate(share.created_at)}`;
+  if (!recording) {
+    body.innerHTML = '<div class="empty"><p>No specific recording attached to this share.</p></div>';
+    return;
+  }
+  const events = recording.events || [];
+  body.innerHTML = `
+    <div class="card">
+      <div class="card-title">Session</div>
+      <div class="list-item" style="border:none;padding:0;">
+        <div class="list-icon">📼</div>
+        <div class="list-body">
+          <div class="list-title">${recording.label || 'Untitled session'}</div>
+          <div class="list-sub">${fmtDate(recording.started_at)} · ${fmtDuration(recording.duration_s)}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Skeleton Replay</div>
+      <div class="skeleton-wrap"><canvas id="cr-canvas" width="400" height="280"></canvas></div>
+      <div class="playback-controls">
+        <button class="btn btn-ghost btn-sm" id="cr-play-btn">▶</button>
+        <input type="range" id="cr-scrub" min="0" max="100" value="0">
+        <span id="cr-time" style="font-size:12px;color:var(--muted);width:50px;text-align:right;">0.0s</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Behavior Log</div>
+      ${events.length ? events.map(ev => `
+        <div class="list-item">
+          <div class="list-icon">🔎</div>
+          <div class="list-body">
+            <div class="list-title">${ev.type}${ev.subtype ? ' · ' + ev.subtype : ''}</div>
+            <div class="list-sub">${fmtDate(ev.started_at)} · ${fmtDuration(ev.duration_s)}</div>
+          </div>
+        </div>`).join('') : '<div class="empty" style="padding:12px 0;"><p>No behavior events in this session.</p></div>'}
+    </div>`;
+
+  // Wire up clinician review skeleton player
+  const allFrames = [];
+  for (const ev of events) {
+    if (ev.snapshot && ev.snapshot.frames) {
+      for (const f of ev.snapshot.frames) allFrames.push(f);
+    }
+  }
+  const crState = { frames: allFrames, fps: 10, currentIdx: 0, playing: false };
+  const crCanvas = document.getElementById('cr-canvas');
+  const crCtx = crCanvas.getContext('2d');
+
+  function crRender() {
+    crCtx.clearRect(0, 0, crCanvas.width, crCanvas.height);
+    if (!crState.frames.length) {
+      crCtx.fillStyle = '#8b949e'; crCtx.font = '14px sans-serif'; crCtx.textAlign = 'center';
+      crCtx.fillText('No skeleton data', crCanvas.width / 2, crCanvas.height / 2);
+      return;
+    }
+    const frame = crState.frames[crState.currentIdx] || {};
+    const pts = {};
+    for (const p of (frame.points || [])) pts[p.i] = p;
+    const W = crCanvas.width, H = crCanvas.height;
+    crCtx.strokeStyle = '#58a6ff'; crCtx.lineWidth = 2;
+    for (const [a, b] of CONNECTIONS) {
+      if (pts[a] && pts[b]) {
+        crCtx.beginPath(); crCtx.moveTo(pts[a].x*W, pts[a].y*H); crCtx.lineTo(pts[b].x*W, pts[b].y*H); crCtx.stroke();
+      }
+    }
+    crCtx.fillStyle = '#3fb950';
+    for (const p of Object.values(pts)) {
+      crCtx.beginPath(); crCtx.arc(p.x*W, p.y*H, 4, 0, Math.PI*2); crCtx.fill();
+    }
+    document.getElementById('cr-scrub').max = crState.frames.length - 1;
+    document.getElementById('cr-scrub').value = crState.currentIdx;
+    document.getElementById('cr-time').textContent = ((frame.t || 0).toFixed(1)) + 's';
+  }
+  crRender();
+
+  document.getElementById('cr-play-btn').addEventListener('click', () => {
+    crState.playing = !crState.playing;
+    document.getElementById('cr-play-btn').textContent = crState.playing ? '⏸' : '▶';
+    if (crState.playing) (function adv() { if (!crState.playing) return; crState.currentIdx = (crState.currentIdx + 1) % Math.max(crState.frames.length, 1); crRender(); setTimeout(adv, 1000/crState.fps); })();
+  });
+  document.getElementById('cr-scrub').addEventListener('input', (e) => { crState.currentIdx = parseInt(e.target.value); crRender(); });
+}
+
+/* ── Format helpers ──────────────────────────────────────────────────── */
+function fmtDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+  catch { return iso; }
+}
+
+function fmtDuration(s) {
+  if (s == null) return '';
+  const t = Math.round(s);
+  const m = Math.floor(t / 60), sec = t % 60;
+  return m ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+/* ── Boot ────────────────────────────────────────────────────────────── */
+(async function boot() {
+  const params = new URLSearchParams(window.location.search);
+  const shareToken = params.get('share');
+  if (shareToken) {
+    await loadClinicianReview(shareToken);
+    return;
+  }
+  // Show login screen by default
+  showScreen('screen-login');
+})();
+</script>
+</body>
+</html>
