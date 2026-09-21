@@ -1,16 +1,12 @@
 """Browser webcam ingest for the web demo (headless hosts have no OpenCV cameras)."""
 
 import io
-import sys
 import time
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__))))
-
 import webapp.server as server_mod  # noqa: E402
-
 
 def _jpeg_bytes(rgb):
     import cv2
@@ -18,7 +14,6 @@ def _jpeg_bytes(rgb):
     ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     assert ok
     return buf.tobytes()
-
 
 def test_browser_frame_stream_push_read():
     stream = server_mod.BrowserFrameStream(warmup_sec=2.0).start()
@@ -33,7 +28,6 @@ def test_browser_frame_stream_push_read():
     finally:
         stream.release()
 
-
 def test_api_frame_requires_active_ingest(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -41,7 +35,6 @@ def test_api_frame_requires_active_ingest(tmp_path, monkeypatch):
     client = TestClient(server_mod.app)
     res = client.post("/api/frame", content=b"not-a-jpeg", headers={"Content-Type": "image/jpeg"})
     assert res.status_code == 409
-
 
 def test_api_frame_accepts_jpeg_while_ingesting():
     from fastapi.testclient import TestClient

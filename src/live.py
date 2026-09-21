@@ -34,12 +34,38 @@ def _resolve_pose_model_path(cfg):
     return mp
 
 
-def load_live_pose_extractor(cfg):
-    """DTW templates (pose.enabled) and/or geometry-only landmarker for ear gate.
+def overlay_enabled(cfg):
+    """True when the live preview should draw a skeleton. Rendering only."""
+    return bool(cfg.get("overlay", {}).get("enabled", False))
 
-    Full pose fusion stays behind pose.enabled. Classes with
-    require_wrist_near_ear still get a PoseExtractor so live can confirm a
-    wrist is near an ear without scoring the DTW stream.
+
+def pose_required_for_scoring(cfg):
+    """Does a missing landmarker change what gets DETECTED, or only what is drawn?
+
+    Scoring depends on it when the DTW stream is on, or when a class gates its
+    opens on wrist-near-ear. The overlay does not: it is cosmetic, so a session
+    must still run without it rather than aborting. models/pose_landmarker.task
+    is gitignored, so a fresh clone hits exactly this path.
+    """
+    from src.pose import classes_needing_wrist_gate
+
+    return bool(cfg.get("pose", {}).get("enabled", False)
+                or classes_needing_wrist_gate(cfg))
+
+
+def load_live_pose_extractor(cfg):
+    """DTW templates (pose.enabled) and/or geometry-only landmarker.
+
+    Full pose fusion stays behind pose.enabled. Two other things want the
+    landmarker without wanting the stream, and both get `templates = None`:
+
+      - classes with require_wrist_near_ear, to confirm a wrist is near an ear
+      - the preview overlay, to draw a skeleton
+
+    templates=None is what keeps them out of scoring, structurally rather than
+    by convention: LiveDetector.active_streams only appends "pose" when
+    templates are present, so _raw_stream_scores skips it and stream_weights
+    never sees it. Nothing in the rendering path can reach the scorer.
     """
     from src.pose import PoseExtractor, classes_needing_wrist_gate, load_pose_templates
 
@@ -51,7 +77,7 @@ def load_live_pose_extractor(cfg):
         templates = load_pose_templates(cfg)
         if templates:
             extractor = PoseExtractor(model_path=model_path, min_confidence=conf)
-    elif classes_needing_wrist_gate(cfg):
+    elif classes_needing_wrist_gate(cfg) or overlay_enabled(cfg):
         extractor = PoseExtractor(model_path=model_path, min_confidence=conf)
     return templates, extractor
 
@@ -64,8 +90,7 @@ class CameraStream:
     tracked so a pathological one is visible instead of silent.
     """
 
-    def __init__(self, camera_index=0, capture_fps=30, drop_on_backpressure=True,
-                 warmup_sec=5.0):
+    def __init__(self, camera_index=0, capture_fps=30, warmup_sec=5.0):
         import cv2
 
         self.capture = cv2.VideoCapture(camera_index)
@@ -84,7 +109,6 @@ class CameraStream:
         self.warmup_sec = float(warmup_sec)
         self.camera_index = camera_index
         self.failure_reason = None
-        self.drop_on_backpressure = drop_on_backpressure
         self.latest = None
         self.lock = threading.Lock()
         self.stopped = False
@@ -183,7 +207,8 @@ class LiveDetector:
 
     def __init__(self, cfg, encoder, bank, tau_high, writer, on_event=None,
                  frame_buffer=None, clip_store=None, session_id=None,
-                 pose_templates=None, hand_templates=None, background_scale=None):
+                 pose_templates=None, hand_templates=None, background_scale=None,
+                 subject_id=None, face_gallery=None, face_encoder=None):
         self.cfg = cfg
         self.encoder = encoder
         self.bank = bank
@@ -195,6 +220,7 @@ class LiveDetector:
         self.frame_buffer = frame_buffer
         self.clip_store = clip_store
         self.session_id = session_id
+        self.subject_id = subject_id
         clips_cfg = cfg.get("clips", {})
         self.pre_roll = float(clips_cfg.get("pre_roll_sec", 2.0))
         self.post_roll = float(clips_cfg.get("post_roll_sec", 2.0))
@@ -315,11 +341,38 @@ class LiveDetector:
         # require_wrist_near_ear (ear_cover). Appearance-only often fires on
         # chin-rest / face-near motion; wrist-ear distance kills those FPs
         # without enabling the measured-harmful DTW pose fusion stream.
-        self.wrist_gate_classes = {
-            name for name in self.class_names
+        #
+        # Threshold is per class: each gated class carries its own
+        # wrist_near_ear_threshold, so the gate is evaluated once per class
+        # rather than once per chunk. A single shared flag was correct only
+        # while ear_cover was the sole gated class.
+        self.wrist_gate_thresholds = {
+            name: float(cfg.class_cfg(name).get("wrist_near_ear_threshold", 0.28))
+            for name in self.class_names
             if bool(cfg.class_cfg(name).get("require_wrist_near_ear", False))
         }
-        self._last_wrist_near_ear = False
+        self._last_wrist_near_ear = {}
+
+        # Face identity (Active Subject). Session-level: every class shares one
+        # allow bit. When identity.enabled, opens require a matching face; no
+        # face / wrong face => allow_open False. Disabled => always allow.
+        from src.face_id import identity_enabled
+
+        self.identity_on = identity_enabled(cfg)
+        self.face_gallery = face_gallery
+        self.face_encoder = face_encoder
+        self.face_stride = max(1, int(cfg.get("identity", {}).get("live_stride", 2)))
+        self._face_frame_i = 0
+        # Start closed when identity is on so we never open before the first
+        # successful match evaluation.
+        self._last_face_match = not self.identity_on
+        if self.identity_on and (face_gallery is None or len(face_gallery) == 0):
+            raise ValueError(
+                "identity.enabled requires a non-empty face gallery for the "
+                "active subject -- record a reference clip first"
+            )
+        if self.identity_on and face_encoder is None:
+            raise ValueError("identity.enabled requires a face_encoder")
 
     @property
     def active_streams(self):
@@ -347,6 +400,46 @@ class LiveDetector:
         """
         stride = self.cfg.stride_chunks * self.chunk_sec
         return 0.5 * float(self.cfg["w_base_sec"]) + self.smoothing * stride
+
+    @property
+    def retention_horizon_sec(self):
+        """How far back the frame buffer must reach for clips to have lead-in.
+
+        A detection is recognised lag_sec after it began, and a class with
+        confirm_sec waits that much longer again, so the frames a clip needs are
+        already history by the time anyone asks for them. Plus pre_roll, plus a
+        small margin.
+
+        Lives here rather than at each call site: run_live and the webapp's
+        _live_loop each built this expression by hand and had drifted apart
+        (+4.0 vs +2.0, and two different ceilings), so a clip saved from the web
+        demo had different lead-in than the same detection from the CLI.
+        """
+        return self.lag_sec + self.pre_roll + self.max_confirm_sec + 2.0
+
+    @property
+    def retention_ceiling_sec(self):
+        """Hard cap, so one stuck detection cannot grow the buffer without end.
+
+        Requires a clip store -- the cap is anchored on max_clip_sec, since
+        nothing longer than that can ever be written.
+        """
+        if self.clip_store is None:
+            return self.retention_horizon_sec
+        return (self.clip_store.max_clip_sec + self.pre_roll + self.post_roll
+                + self.lag_sec + self.max_confirm_sec)
+
+    def update_face_match(self, frame_rgb):
+        """Refresh the identity gate from a camera frame (call at working_fps)."""
+        if not self.identity_on:
+            self._last_face_match = True
+            return True
+        self._face_frame_i += 1
+        if (self._face_frame_i - 1) % self.face_stride != 0:
+            return self._last_face_match
+        ok, _ = self.face_encoder.matches_gallery(frame_rgb, self.face_gallery)
+        self._last_face_match = bool(ok)
+        return self._last_face_match
 
     def _window_scores(self, lengths=None):
         """Max over window scales of the top-k similarity, per class."""
@@ -428,19 +521,19 @@ class LiveDetector:
         raw = self._raw_stream_scores(pose_seq, hand_seq)
         active = self.active_streams
 
-        if self.wrist_gate_classes:
+        if self.wrist_gate_thresholds:
             from src.pose import wrist_near_ear
 
             # pose_seq is expected already normalize_pose()'d by the caller.
-            thr = 0.28
-            for name in self.wrist_gate_classes:
-                thr = float(self.cfg.class_cfg(name).get(
-                    "wrist_near_ear_threshold", thr))
-                break
-            self._last_wrist_near_ear = bool(
-                pose_seq is not None and wrist_near_ear(pose_seq, threshold=thr))
+            # One evaluation per gated class, each against its own threshold --
+            # two classes with different thresholds must gate independently.
+            self._last_wrist_near_ear = {
+                name: bool(pose_seq is not None
+                           and wrist_near_ear(pose_seq, threshold=thr))
+                for name, thr in self.wrist_gate_thresholds.items()
+            }
         else:
-            self._last_wrist_near_ear = False
+            self._last_wrist_near_ear = {}
 
         # Pass 1: score every class. Openings cannot be decided per class in
         # isolation -- cross-class resolution needs all of them.
@@ -533,9 +626,13 @@ class LiveDetector:
                 allow_open = False
             # Geometric confirmation (atmos hand-to-ear): appearance may match
             # ear_cover on a chin rest; without a wrist near an ear, refuse open.
-            if (allow_open and name in self.wrist_gate_classes
+            if (allow_open and name in self.wrist_gate_thresholds
                     and not self.trackers[name].is_open
-                    and not self._last_wrist_near_ear):
+                    and not self._last_wrist_near_ear.get(name, False)):
+                allow_open = False
+            # Active-Subject face gate: wrong face / no face blocks every class.
+            if (allow_open and self.identity_on and not self.trackers[name].is_open
+                    and not self._last_face_match):
                 allow_open = False
 
             # Mutual exclusion: one subject cannot be doing two of these at once,
@@ -548,9 +645,15 @@ class LiveDetector:
             # things, and it gets weaker as classes are added. Hence the flag.
             # Require a clear margin over the incumbent so a 0.01 cosine flicker
             # cannot flip ear_cover → hair_twirling mid-event.
+            #
+            # confirm_pending: a class that still owes a confirmation window is
+            # not a detection yet. Superseding on its first above-tau chunk
+            # would truncate a real event on the strength of the exact outlier
+            # confirm_sec exists to reject -- and then open nothing.
             if (self.mutual_exclusion and allow_open
                     and not self.trackers[name].is_open
-                    and scores[name] > self.trackers[name].tau_high):
+                    and scores[name] > self.trackers[name].tau_high
+                    and not self.trackers[name].confirm_pending(effective_end)):
                 for other in self.class_names:
                     if other != name and self.trackers[other].is_open:
                         if rank[name] < rank[other] + self.open_margin:
@@ -636,10 +739,28 @@ class LiveDetector:
                 self._close(closed)
 
 
-def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
+def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None,
+             subject_id=None):
     """Capture until SIGINT (or max_seconds), detecting as frames arrive."""
     started_at = utc_now()
     session_id = live_session_id(started_at)
+
+    from src.face_id import FaceIdEncoder, identity_enabled, load_gallery
+    from src.subjects import bind_subject
+
+    if subject_id:
+        bind_subject(cfg, subject_id)
+    if identity_enabled(cfg) and not subject_id:
+        raise SystemExit("identity.enabled requires subject_id for live")
+
+    face_gallery = face_encoder = None
+    if identity_enabled(cfg):
+        face_gallery = load_gallery(cfg, subject_id)
+        if face_gallery is None:
+            raise SystemExit(
+                "no face gallery for subject %r -- record a reference first" % subject_id
+            )
+        face_encoder = FaceIdEncoder(cfg)
 
     detector_writer = EventLogWriter(
         path=cfg.path(cfg["event_log"]["path"]),
@@ -652,13 +773,13 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
         tau_high=tau_high,
         source_start_utc=started_at,          # live always knows its origin
         flush_each_event=bool(cfg["event_log"]["flush_each_event"]),
+        subject_id=subject_id,
     )
 
     live_cfg = cfg["live"]
     stream = CameraStream(
         camera_index=live_cfg["camera_index"],
         capture_fps=live_cfg["capture_fps"],
-        drop_on_backpressure=live_cfg["drop_on_backpressure"],
         warmup_sec=float(live_cfg.get("camera_warmup_sec", 5.0)),
     ).start()
 
@@ -699,6 +820,9 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
         cfg, encoder, bank, tau_high, detector_writer, on_event, session_id=session_id,
         pose_templates=pose_templates, hand_templates=hand_templates,
         background_scale=background_scale,
+        subject_id=subject_id,
+        face_gallery=face_gallery,
+        face_encoder=face_encoder,
     )
     if background_scale:
         print("bg scale  : calibrated %s (warmup %d chunks -- centre only)"
@@ -714,14 +838,15 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
     if clips_enabled(cfg):
         clips_cfg = cfg["clips"]
         store = build_store(cfg)
-        base_horizon = detector.lag_sec + detector.pre_roll + detector.max_confirm_sec + 2.0
+        # Attach the store first: retention_ceiling_sec is anchored on it.
+        detector.clip_store = store
+        base_horizon = detector.retention_horizon_sec
         frame_buffer = FrameRetentionBuffer(
             base_horizon_sec=base_horizon,
-            hard_ceiling_sec=store.max_clip_sec + detector.pre_roll + detector.post_roll + detector.lag_sec + detector.max_confirm_sec,
+            hard_ceiling_sec=detector.retention_ceiling_sec,
             jpeg_quality=clips_cfg.get("jpeg_quality", 80),
         )
         detector.frame_buffer = frame_buffer
-        detector.clip_store = store
         print("clips     : %s" % describe_store(store))
         print("            retaining ~%.0fs of frames in memory (JPEG) so clips can" % base_horizon)
         print("            include the seconds before a detection is recognised")
@@ -772,6 +897,10 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
                 continue
 
             capture_sec = now - t0
+            try:
+                detector.update_face_match(frame)
+            except Exception:  # noqa: BLE001
+                pass
             buffer.append((capture_sec, frame))
             if frame_buffer is not None:
                 frame_buffer.append(capture_sec, frame)
@@ -795,7 +924,11 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
                 encode_started = time.time()
                 feature = encoder.encode_clips([clip])[0]
                 pose_seq = hand_seq = None
-                if pose_extractor is not None:
+                # The landmarker is also loaded for the preview overlay, which
+                # this terminal session does not have. Only pay for landmarks
+                # when something consumes them: the DTW stream, or a wrist gate.
+                if pose_extractor is not None and (pose_templates
+                                                   or detector.wrist_gate_thresholds):
                     from src.pose import normalize_pose
 
                     pose_seq = normalize_pose(pose_extractor.landmarks_for_clip(clip))
@@ -826,6 +959,11 @@ def run_live(cfg, encoder, bank, tau_high, on_event=None, max_seconds=None):
         for extractor in (pose_extractor, hand_extractor):
             if extractor is not None:
                 extractor.close()
+        if face_encoder is not None:
+            try:
+                face_encoder.close()
+            except Exception:  # noqa: BLE001
+                pass
         # A clean stop closes open detections normally -- a real closed row, not
         # a force-close (spec 10.4). End at measured elapsed time, not a counter.
         detector.flush(time.time() - t0)

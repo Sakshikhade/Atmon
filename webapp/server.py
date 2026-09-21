@@ -16,9 +16,11 @@ the three demo steps can happen from a browser instead of the CLI:
   3. browse saved clips (spec 9.6), grouped by class, playable in the browser
 
 Calibration is intentionally simplified for the demo: instead of Phase 4's
-labeled-eval-set sweep (scripts/calibrate.py), a fixed sigma threshold is
-written to cache/calibration.json if one is not already there. This is called
-out in the UI as an uncalibrated demo threshold, never presented as measured.
+labeled-eval-set sweep (scripts/calibrate.py), a fixed sigma threshold is used
+when nothing has been calibrated. It is held IN MEMORY for the session and
+never written to cache/calibration.json -- persisting it turned "we have no
+threshold" into a file that every later reader, require_tau_high included,
+treated as an answer. Every surface that shows it says UNCALIBRATED.
 
 Run from my_approach/:
     python webapp/server.py
@@ -27,6 +29,7 @@ Run from my_approach/:
 import json
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -39,7 +42,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.clip_writer import build_store, clips_enabled, write_frames, FrameRetentionBuffer
-from src.config import add_class_to_config, load_config, save_calibration
+from src.config import add_class_to_config, calibration_status, load_config
 from src.encoder import build_encoder
 from src.event_log import (
     SOURCE_LIVE,
@@ -47,10 +50,30 @@ from src.event_log import (
     live_session_id,
     new_run_id,
     read_events,
+    unclosed_events,
     utc_now,
 )
-from src.live import CameraStream, LiveDetector, load_live_pose_extractor
+from src.live import (
+    CameraStream,
+    LiveDetector,
+    load_live_pose_extractor,
+    pose_required_for_scoring,
+)
+from src.pose import POSE_EDGES, landmarks_to_overlay
 from src.prototypes import bank_path, build_bank, save_bank
+from src.subjects import (
+    bind_subject,
+    count_reference_clips,
+    create_subject,
+    delete_subject,
+    has_face_gallery,
+    list_subjects,
+    load_meta,
+    migrate_legacy_references,
+    save_meta,
+    subject_references_dir,
+)
+from src.face_id import FaceIdEncoder, harvest_subject_faces, identity_enabled, load_gallery
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
 
@@ -58,6 +81,11 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # (spec 8); this exists only so the "live test" step works before that has
 # ever been run. cache/calibration.json's existing value (if any) always wins.
 DEMO_TAU_HIGH = 1.5
+
+#: Message kinds that may be dropped when a subscriber falls behind. Only the
+#: high-rate cosmetic ones -- never anything that records a detection.
+_LOSSY_KINDS = {"pose_frame"}
+POSE_QUEUE_MAX = 4
 
 
 # --------------------------------------------------------------------------
@@ -81,28 +109,90 @@ class AppState:
         self.live_thread = None
         self.live_stop = threading.Event()
         self.live_session_id = None
+        self.active_subject_id = None
 
         # browser webcam ingest (None when using server OpenCV camera)
         self.ingest_stream = None
 
-        # shared preview + broadcast
-        self.latest_frame_jpeg = None
+        # broadcast
         self.subscribers = []  # list of queue.Queue, one per connected browser tab
 
     def publish(self, kind, payload):
         msg = json.dumps({"kind": kind, **payload})
         with self.lock:
             subs = list(self.subscribers)
+        drop_if_backed_up = kind in _LOSSY_KINDS
         for q in subs:
+            # pose_frame arrives ~8x/second. A tab that stops draining its queue
+            # (backgrounded, throttled, network-stalled) would otherwise grow it
+            # without bound. Drop the newest instead of blocking the capture
+            # loop -- the same latest-wins choice CameraStream makes. Real
+            # events (live_open / live_close) are never dropped.
+            if drop_if_backed_up and q.qsize() > POSE_QUEUE_MAX:
+                continue
             q.put(msg)
 
 
 STATE = AppState()
 app = FastAPI(title="Few-shot action detector -- demo")
 
+# Optional shared secret. Unset (the default) the app is loopback-only and
+# unauthenticated, exactly as before. Set, every mutating request must carry it.
+APP_TOKEN = os.environ.get("APP_TOKEN", "").strip()
+
+#: /api/frame is the webcam ingest -- ~8 POSTs/second from the page. Requiring a
+#: header on it would mean putting the token in client-side JS, where it is not
+#: a secret. It carries no destructive power (it feeds an in-memory frame slot
+#: that only an already-running session reads), so it is exempt.
+_UNPROTECTED_POSTS = {"/api/frame"}
+
+
+@app.middleware("http")
+async def require_token(request, call_next):
+    """Gate mutating requests on APP_TOKEN when one is configured.
+
+    GETs stay open: the page, /api/state and the SSE stream have to work for an
+    unauthenticated browser to be able to present a login-less demo at all.
+    What this protects is the routes that delete clips or rewrite config.yaml.
+    """
+    if APP_TOKEN and request.method not in ("GET", "HEAD", "OPTIONS") \
+            and request.url.path not in _UNPROTECTED_POSTS:
+        sent = request.headers.get("authorization", "")
+        prefix = "bearer "
+        if not (sent[:len(prefix)].lower() == prefix
+                and secrets.compare_digest(sent[len(prefix):], APP_TOKEN)):
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                {"detail": "missing or invalid bearer token"}, status_code=401)
+    return await call_next(request)
+
 
 def cfg():
     return load_config(CONFIG_PATH)
+
+
+def _ensure_subjects(c):
+    """Migrate legacy refs once; return current subject list."""
+    migrate_legacy_references(c, verbose=False)
+    return list_subjects(c)
+
+
+def bind_active_subject(c, subject_id=None, require=False):
+    """Bind cfg to a subject. Pass require=True when the caller needs one."""
+    _ensure_subjects(c)
+    sid = subject_id if subject_id is not None else STATE.active_subject_id
+    if require and not sid:
+        raise HTTPException(
+            409,
+            "select an active subject first (identity gate is on)",
+        )
+    if sid:
+        try:
+            bind_subject(c, sid)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    return c, sid
 
 
 def get_encoder(c):
@@ -116,19 +206,37 @@ def get_encoder(c):
         return STATE.encoder
 
 
-def ensure_calibration(c):
-    """Write a preset demo threshold only if calibrate.py has never run."""
-    if c.get("tau_high") is not None:
-        return float(c["tau_high"]), c.get("_tau_high_source", "config.yaml")
-    save_calibration(c, DEMO_TAU_HIGH, extra={"source": "demo-preset (uncalibrated, see spec 8)"})
-    return DEMO_TAU_HIGH, "demo-preset"
+def _unclosed_count(c):
+    """How many events in the log never got a closing row (spec 9.2)."""
+    try:
+        return len(unclosed_events(c.path(c["event_log"]["path"])))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
-def _encode_jpeg(rgb_frame):
-    import cv2
+def resolve_tau(c):
+    """The threshold this session will use, and an honest account of it.
 
-    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-    return buf.tobytes() if ok else None
+    Returns (tau_high, status) where status is calibration_status()'s dict.
+
+    This deliberately does NOT persist anything. The previous version wrote the
+    demo preset into cache/calibration.json whenever nothing was calibrated,
+    which turned "we have no threshold" into a file that every later reader --
+    including require_tau_high, whose entire job is to refuse that -- treated as
+    an answer. The preset now lives for the length of one session and dies with
+    it; only scripts/calibrate.py writes the sidecar.
+    """
+    status = calibration_status(c)
+    if status["tau_high"] is not None:
+        return float(status["tau_high"]), status
+    return DEMO_TAU_HIGH, {
+        "state": "uncalibrated",
+        "tau_high": DEMO_TAU_HIGH,
+        "source": "demo-preset (uncalibrated, see spec 8)",
+        "detail": "Fixed %.1f-sigma preset, not measured performance. "
+                  "Run scripts/calibrate.py against a labeled eval set."
+                  % DEMO_TAU_HIGH,
+    }
 
 
 class BrowserFrameStream:
@@ -238,7 +346,6 @@ def _open_stream(source, camera_index, live_cfg=None):
     return CameraStream(
         camera_index=idx,
         capture_fps=cfg_live.get("capture_fps", 30),
-        drop_on_backpressure=cfg_live.get("drop_on_backpressure", True),
         warmup_sec=float(cfg_live.get("camera_warmup_sec", 5.0)),
     ).start()
 
@@ -248,7 +355,11 @@ def _open_stream(source, camera_index, live_cfg=None):
 # --------------------------------------------------------------------------
 
 def class_status(c):
-    refs_dir = c.path("data", "references")
+    _, sid = bind_active_subject(c, require=False)
+    if sid:
+        refs_dir = subject_references_dir(c, sid)
+    else:
+        refs_dir = c.path("data", "references")
     names = set(c.class_names)
     if os.path.isdir(refs_dir):
         for entry in os.listdir(refs_dir):
@@ -281,16 +392,47 @@ def class_status(c):
 @app.get("/api/state")
 def api_state():
     c = cfg()
+    subjects = _ensure_subjects(c)
     classes = class_status(c)
-    tau_high = c.get("tau_high")
+    # What live would actually use, including the in-memory preset -- so the UI
+    # shows the number that will be applied, labelled with where it came from.
+    tau_high, status = resolve_tau(c)
+    active = STATE.active_subject_id
+    active_meta = None
+    face_ready = False
+    n_refs = 0
+    if active:
+        active_meta = load_meta(c, active) or {"id": active, "display_name": active}
+        face_ready = has_face_gallery(c, active)
+        n_refs = count_reference_clips(c, active)
     return {
+        # Events whose last row is `open` (spec 9.2): the run ended while a
+        # detection was still running. Legitimate -- a daemon thread killed at
+        # interpreter exit never reaches its flush -- but it must be visible,
+        # because a reader that only counts `closed` rows silently loses them.
+        "unclosed_events": _unclosed_count(c),
         "mode": STATE.mode,
         "classes": classes,
         "bank_built": os.path.exists(bank_path(c)),
         "tau_high": tau_high,
-        "tau_high_source": c.get("_tau_high_source"),
+        "tau_high_source": status["source"],
+        "calibration_state": status["state"],
+        "calibration_detail": status["detail"],
         "clips_enabled": clips_enabled(c),
         "backbone": c.get("backbone"),
+        "identity_enabled": identity_enabled(c),
+        "subjects": [
+            {
+                **s,
+                "n_references": count_reference_clips(c, s["id"]),
+                "face_ready": has_face_gallery(c, s["id"]),
+            }
+            for s in subjects
+        ],
+        "active_subject": active_meta,
+        "active_subject_id": active,
+        "face_ready": face_ready,
+        "n_subject_references": n_refs,
     }
 
 
@@ -321,19 +463,6 @@ def api_stream():
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-@app.get("/api/preview.jpg")
-def api_preview():
-    with STATE.lock:
-        frame = STATE.latest_frame_jpeg
-    if frame is None:
-        # 204: idle / camera warming up. Prefer this over 404 so the browser
-        # poll does not spam the server log while Record/Live is starting.
-        from fastapi.responses import Response
-
-        return Response(status_code=204)
-    return StreamingResponse(iter([frame]), media_type="image/jpeg")
-
-
 # --------------------------------------------------------------------------
 # Step 1 -- add a reference clip: record from browser webcam (default) or
 # server OpenCV camera, then run the prototype-bank build in the background
@@ -359,6 +488,13 @@ def _record_loop(c, class_name, camera_index, fps, source="browser"):
         while not STATE.record_stop.is_set():
             if stream.stopped:
                 STATE.publish("record_error", {"message": stream.failure_reason or "camera stopped"})
+                # Hand the mode back here. Only api_record_stop advances it
+                # otherwise, and the page disables Stop on record_error -- so a
+                # camera that never delivers (browser permission denied, the
+                # common case now that ingest is the default) would strand
+                # mode="recording" and 409 "busy" on every later start.
+                with STATE.lock:
+                    STATE.mode = "idle"
                 break
             now = time.time()
             if now < next_at:
@@ -371,10 +507,6 @@ def _record_loop(c, class_name, camera_index, fps, source="browser"):
             next_at += interval
             elapsed = now - t0
             STATE.record_frames.append((elapsed, frame))
-            jpeg = _encode_jpeg(frame)
-            if jpeg is not None:
-                with STATE.lock:
-                    STATE.latest_frame_jpeg = jpeg
             STATE.publish("record_progress", {"elapsed": round(elapsed, 1), "max_sec": max_sec})
             # Auto-stop at max_reference_sec so W_base cannot balloon again.
             if elapsed >= max_sec:
@@ -436,7 +568,6 @@ def api_record_stop(save: bool = True):
     if not save or not frames:
         with STATE.lock:
             STATE.mode = "idle"
-            STATE.latest_frame_jpeg = None
         return {
             "ok": True,
             "saved": False,
@@ -449,6 +580,9 @@ def api_record_stop(save: bool = True):
 
     class_dir = c.path("data", "references", class_name)
     try:
+        c, sid = bind_active_subject(c, require=identity_enabled(c))
+        if sid:
+            class_dir = os.path.join(subject_references_dir(c, sid), class_name)
         os.makedirs(class_dir, exist_ok=True)
         out_path = os.path.join(class_dir, "ref_%s.mp4" % time.strftime("%Y%m%dT%H%M%S"))
         write_frames(out_path, frames, c["working_fps"])
@@ -458,7 +592,6 @@ def api_record_stop(save: bool = True):
         # every future record/live start then 409s "busy" until a restart.
         with STATE.lock:
             STATE.mode = "idle"
-            STATE.latest_frame_jpeg = None
         raise
 
     warning = None
@@ -471,8 +604,7 @@ def api_record_stop(save: bool = True):
 
     with STATE.lock:
         STATE.mode = "building"
-        STATE.latest_frame_jpeg = None
-    threading.Thread(target=_build_loop, args=(c,), daemon=True).start()
+    threading.Thread(target=_build_loop, args=(c, sid), daemon=True).start()
 
     return {"ok": True, "saved": True, "path": out_path, "duration_sec": round(duration, 2), "warning": warning}
 
@@ -489,35 +621,47 @@ async def api_references_upload(class_name: str, file: UploadFile):
         STATE.mode = "building"
 
     c = cfg()
-    class_dir = c.path("data", "references", class_name)
     try:
+        c, sid = bind_active_subject(c, require=identity_enabled(c))
+        class_dir = (
+            os.path.join(subject_references_dir(c, sid), class_name)
+            if sid else c.path("data", "references", class_name)
+        )
         os.makedirs(class_dir, exist_ok=True)
         ext = os.path.splitext(file.filename or "")[1].lower() or ".mp4"
         out_path = os.path.join(class_dir, "ref_%s%s" % (time.strftime("%Y%m%dT%H%M%S"), ext))
         with open(out_path, "wb") as fh:
             fh.write(await file.read())
+    except HTTPException:
+        with STATE.lock:
+            STATE.mode = "idle"
+        raise
     except Exception:
         # Mode was already set to "building" above; a write failure here would
         # otherwise strand it, since nothing else resets it back to "idle".
+        # Also covers migrate/create_subject mkdir failures under subjects/.
         with STATE.lock:
             STATE.mode = "idle"
         raise
 
-    threading.Thread(target=_build_loop, args=(c,), daemon=True).start()
+    threading.Thread(target=_build_loop, args=(c, sid), daemon=True).start()
     return {"ok": True, "path": out_path}
 
 
-def _build_loop(c):
+def _build_loop(c, subject_id=None):
     """The background work: encode every class's references into the
     prototype bank (spec 6), same as scripts/build_prototypes.py -- including
     the pose/hand template stages when those streams are enabled, so a config
     that turns them on gets templates the live loop can actually load."""
     try:
+        if subject_id:
+            bind_subject(c, subject_id)
+        refs = c.get("_references_dir")
         if c.get("pose", {}).get("enabled", False):
             STATE.publish("build_progress", {"message": "building pose templates..."})
             from src.pose import build_pose_templates, save_pose_templates
 
-            pose_templates = build_pose_templates(c, verbose=False)
+            pose_templates = build_pose_templates(c, references_dir=refs, verbose=False)
             if pose_templates:
                 save_pose_templates(c, pose_templates)
 
@@ -525,19 +669,29 @@ def _build_loop(c):
             STATE.publish("build_progress", {"message": "building hand templates..."})
             from src.hands import build_hand_templates, save_hand_templates
 
-            hand_templates = build_hand_templates(c, verbose=False)
+            hand_templates = build_hand_templates(c, references_dir=refs, verbose=False)
             if hand_templates:
                 save_hand_templates(c, hand_templates)
 
         STATE.publish("build_progress", {"message": "building prototype bank..."})
         encoder = get_encoder(c)
-        bank, w_base_sec = build_bank(c, encoder, verbose=False)
+        bank, w_base_sec = build_bank(c, encoder, references_dir=refs, verbose=False)
         save_bank(c, bank, w_base_sec)
-        ensure_calibration(c)
+        face_n = 0
+        if subject_id and identity_enabled(c):
+            STATE.publish("build_progress", {"message": "harvesting face gallery..."})
+            try:
+                face_n = harvest_subject_faces(c, subject_id, verbose=False)
+            except Exception as exc:  # noqa: BLE001
+                STATE.publish("build_progress", {
+                    "message": "face harvest warning: %s" % exc,
+                })
         STATE.publish("build_done", {
             "message": "ready for detection",
             "classes": sorted(bank.keys()),
             "w_base_sec": round(w_base_sec, 2),
+            "subject_id": subject_id,
+            "face_embeddings": face_n,
         })
     except (Exception, SystemExit) as exc:  # noqa: BLE001
         # SystemExit, not just Exception: src.pose.build_pose_templates and
@@ -565,14 +719,23 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
     session_id = live_session_id(started_at)
     STATE.live_session_id = session_id
     stream = None
+    face_encoder = None
+    subject_id = STATE.active_subject_id
 
     try:
+        if subject_id:
+            bind_subject(c, subject_id)
+        elif identity_enabled(c):
+            raise RuntimeError("select an active subject before starting live")
+
         encoder = get_encoder(c)
         from src.prototypes import load_bank
 
         bank, w_base_sec = load_bank(c)
         c = load_config(CONFIG_PATH, w_base_sec=w_base_sec)
-        tau_high, tau_source = ensure_calibration(c)
+        if subject_id:
+            bind_subject(c, subject_id)
+        tau_high, tau_status = resolve_tau(c)
     except (Exception, SystemExit) as exc:  # noqa: BLE001
         # SystemExit, not just Exception: load_bank raises it (missing bank,
         # or a bank file present but containing no classes -- e.g. corrupted
@@ -614,6 +777,7 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
         tau_high=tau_high,
         source_start_utc=started_at,
         flush_each_event=bool(c["event_log"]["flush_each_event"]),
+        subject_id=subject_id,
     )
 
     live_cfg = c["live"]
@@ -631,18 +795,27 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
     # Same streams as the offline path and scripts/detect_live.py. Without
     # these, enabling pose/hands in config.yaml would silently do nothing in
     # the web demo -- see src.live.run_live for the reference wiring.
+    pose_templates = pose_extractor = None
     try:
         pose_templates, pose_extractor = load_live_pose_extractor(c)
     except (FileNotFoundError, OSError, RuntimeError) as exc:
-        STATE.publish("live_error", {
-            "message": "pose landmarker failed to load (ear_cover wrist gate): %s" % exc,
+        # Fatal only when the landmarker changes what gets DETECTED -- the DTW
+        # stream, or a class gating its opens on wrist-near-ear. When the only
+        # caller is the preview overlay the failure is cosmetic, and killing
+        # the session over a missing drawing would be the wrong trade.
+        if pose_required_for_scoring(c):
+            STATE.publish("live_error", {
+                "message": "pose landmarker failed to load (ear_cover wrist gate): %s" % exc,
+            })
+            stream.release()
+            _clear_ingest(stream)
+            writer.close()
+            with STATE.lock:
+                STATE.mode = "idle"
+            return
+        STATE.publish("status", {
+            "message": "skeleton overlay unavailable: %s" % exc,
         })
-        stream.release()
-        _clear_ingest(stream)
-        writer.close()
-        with STATE.lock:
-            STATE.mode = "idle"
-        return
     hand_templates = hand_extractor = None
     try:
         if c.get("hands", {}).get("enabled", False):
@@ -677,44 +850,68 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
     detector = None
     t0 = time.time()
     try:
-        if clips_enabled(c):
-            store = build_store(c)
-            # Hold enough history for confirm_sec (hair) + pre_roll so clips
-            # still get lead-in after a delayed open.
-            max_confirm = max(
-                (float(c.class_cfg(n).get("confirm_sec", 0.0)) for n in c.class_names),
-                default=0.0,
-            )
-            base_horizon = (
-                0.5 * float(c["w_base_sec"])
-                + c["smoothing_windows"] * c.stride_chunks * c["chunk_sec"]
-                + float(c.get("clips", {}).get("pre_roll_sec", 1.0))
-                + max_confirm
-                + 4.0
-            )
-            frame_buffer = FrameRetentionBuffer(
-                base_horizon_sec=base_horizon,
-                hard_ceiling_sec=store.max_clip_sec + 10.0 + max_confirm,
-                jpeg_quality=c["clips"].get("jpeg_quality", 80),
-            )
+        face_gallery = None
+        if identity_enabled(c):
+            if not subject_id:
+                raise RuntimeError("identity.enabled requires an active subject")
+            face_gallery = load_gallery(c, subject_id)
+            if face_gallery is None:
+                raise RuntimeError(
+                    "no face gallery for subject %r -- record a reference clip first"
+                    % subject_id
+                )
+            face_encoder = FaceIdEncoder(c)
 
         detector = LiveDetector(
             c, encoder, bank, tau_high, writer, on_event, session_id=session_id,
             pose_templates=pose_templates, hand_templates=hand_templates,
             background_scale=background_scale,
+            subject_id=subject_id,
+            face_gallery=face_gallery,
+            face_encoder=face_encoder,
         )
-        detector.frame_buffer = frame_buffer
-        detector.clip_store = store
+
+        # The buffer is sized from the detector, not re-derived from config:
+        # this loop and src.live.run_live had drifted to different constants,
+        # so browser and CLI sessions kept different amounts of pre-roll.
+        # Detector first, then store, then buffer -- retention_ceiling_sec is
+        # anchored on the store's max_clip_sec.
+        if clips_enabled(c):
+            store = build_store(c)
+            detector.clip_store = store
+            frame_buffer = FrameRetentionBuffer(
+                base_horizon_sec=detector.retention_horizon_sec,
+                hard_ceiling_sec=detector.retention_ceiling_sec,
+                jpeg_quality=c["clips"].get("jpeg_quality", 80),
+            )
+            detector.frame_buffer = frame_buffer
+
+        # Overlay settings. Rendering only -- it never touches active_streams.
+        overlay_cfg = c.get("overlay", {})
+        overlay_on = bool(overlay_cfg.get("enabled", False)) and pose_extractor is not None
+        overlay_mirror = bool(overlay_cfg.get("mirror", True))
+        overlay_min_vis = float(overlay_cfg.get("min_visibility", 0.5))
+        overlay_stride = max(1, int(overlay_cfg.get("stride", 1)))
 
         STATE.publish("live_started", {
             "session_id": session_id,
             "classes": detector.class_names,
             "streams": detector.active_streams,
             "tau_high": tau_high,
-            "tau_high_source": tau_source,
+            "tau_high_source": tau_status["source"],
+            "calibration_state": tau_status["state"],
+            "calibration_detail": tau_status["detail"],
             "clips_enabled": store is not None,
             "warmup_sec": detector.warmup_chunks * detector.chunk_sec,
             "source": source,
+            # Topology ships from the server so the client cannot drift from
+            # UPPER_BODY, and mirror ships so CSS and config stay in step.
+            "overlay": {
+                "enabled": overlay_on,
+                "mirror": overlay_mirror,
+                "max_age_ms": int(overlay_cfg.get("max_age_ms", 1200)),
+                "edges": POSE_EDGES,
+            },
         })
 
         t0 = time.time()
@@ -722,6 +919,8 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
         next_frame_at = t0
         buffer = []
         chunk_index = 0
+        frame_index = 0
+        pose_seq_no = 0
         warmed = False
 
         while not STATE.live_stop.is_set():
@@ -742,13 +941,46 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
                 continue
 
             capture_sec = now - t0
-            buffer.append((capture_sec, frame))
+            if detector is not None:
+                try:
+                    detector.update_face_match(frame)
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Pose PER FRAME, not per chunk.
+            #
+            # Computing it at chunk time (after the encode) made landmarks
+            # describing t in [T, T+2] available at T+2+encode -- 2 to 3.5s
+            # stale. A skeleton drawn from that puts a hand at an ear seconds
+            # after the real hand came down.
+            #
+            # It costs the same: landmarks_for_clip already ran detect() on all
+            # 16 frames of every 2s chunk, which is the same 8/sec as one per
+            # frame at working_fps. Measured 20.9 ms/frame on an M3, vs a
+            # 125 ms budget. The chunk-time call below is now a fallback only.
+            raw_landmarks = None
+            if pose_extractor is not None and frame_index % overlay_stride == 0:
+                try:
+                    xyz, vis = pose_extractor.detect_frame(frame)
+                    raw_landmarks = xyz
+                    if overlay_on:
+                        pose_seq_no = pose_seq_no + 1
+                        STATE.publish("pose_frame", {
+                            "seq": pose_seq_no,
+                            "t": round(capture_sec, 3),
+                            "points": landmarks_to_overlay(
+                                xyz, vis,
+                                min_visibility=overlay_min_vis,
+                                mirror=overlay_mirror),
+                        })
+                except Exception:  # noqa: BLE001
+                    # Drawing must never take the session down.
+                    raw_landmarks = None
+            frame_index += 1
+
+            buffer.append((capture_sec, frame, raw_landmarks))
             if frame_buffer is not None:
                 frame_buffer.append(capture_sec, frame)
-            jpeg = _encode_jpeg(frame)
-            if jpeg is not None:
-                with STATE.lock:
-                    STATE.latest_frame_jpeg = jpeg
             next_frame_at += frame_interval
             if next_frame_at < now:
                 next_frame_at = now + frame_interval
@@ -760,13 +992,21 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
                 end_sec = taken[-1][0] + frame_interval
 
                 import numpy as np
-                clip = np.stack([f for _, f in taken])
+                clip = np.stack([f for _, f, _ in taken])
                 feature = encoder.encode_clips([clip])[0]
                 pose_seq = hand_seq = None
                 if pose_extractor is not None:
                     from src.pose import normalize_pose
 
-                    pose_seq = normalize_pose(pose_extractor.landmarks_for_clip(clip))
+                    # Reuse the per-frame landmarks rather than re-running the
+                    # detector over the same frames. Falls back to the chunk
+                    # call if stride skipped frames or any detect_frame failed,
+                    # so the wrist gate sees the same input either way.
+                    rows = [lm for _, _, lm in taken]
+                    if all(lm is not None for lm in rows):
+                        pose_seq = normalize_pose(np.stack(rows))
+                    else:
+                        pose_seq = normalize_pose(pose_extractor.landmarks_for_clip(clip))
                 if hand_extractor is not None:
                     from src.hands import normalize_hand
 
@@ -788,8 +1028,16 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
         if detector is not None:
             try:
                 detector.flush(time.time() - t0)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                # Never silent. A failed flush leaves `open` rows with no
+                # matching `closed` row, and the log is append-only so nothing
+                # downstream can tell that apart from a crashed run.
+                # (A killed daemon thread skips this block entirely -- that
+                # case is spec 9.2 and is reported at startup instead.)
+                print("WARNING: flush failed, events left open: %s" % exc)
+                STATE.publish("live_error", {
+                    "message": "session ended but events could not be closed: %s" % exc,
+                })
         try:
             writer.close()
         except Exception:  # noqa: BLE001
@@ -798,6 +1046,11 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
             stream.release()
         except Exception:  # noqa: BLE001
             pass
+        if face_encoder is not None:
+            try:
+                face_encoder.close()
+            except Exception:  # noqa: BLE001
+                pass
         _clear_ingest(stream)
         for extractor in (pose_extractor, hand_extractor):
             if extractor is not None:
@@ -816,7 +1069,6 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
             except Exception:  # noqa: BLE001
                 pass
         with STATE.lock:
-            STATE.latest_frame_jpeg = None
             STATE.mode = "idle"
         STATE.publish("live_stopped", {"session_id": session_id})
 
@@ -828,6 +1080,13 @@ def api_live_start(
     source: str = "browser",
 ):
     c = cfg()
+    c, sid = bind_active_subject(c, require=identity_enabled(c))
+    if identity_enabled(c):
+        if not has_face_gallery(c, sid):
+            raise HTTPException(
+                409,
+                "no face gallery for the active subject -- record a reference clip first",
+            )
     if not os.path.exists(bank_path(c)):
         raise HTTPException(409, "no prototype bank yet -- add at least one reference clip first")
     source = (source or "browser").strip().lower()
@@ -843,7 +1102,7 @@ def api_live_start(
         target=_live_loop, args=(c, camera_index, max_seconds, source), daemon=True
     )
     STATE.live_thread.start()
-    return {"ok": True, "source": source}
+    return {"ok": True, "source": source, "subject_id": sid}
 
 
 @app.post("/api/live/stop")
@@ -1147,7 +1406,80 @@ def api_prototypes_rebuild():
         if STATE.mode != "idle":
             raise HTTPException(409, "busy: current mode is %r" % STATE.mode)
         STATE.mode = "building"
-    threading.Thread(target=_build_loop, args=(cfg(),), daemon=True).start()
+    c = cfg()
+    c, sid = bind_active_subject(c, require=identity_enabled(c))
+    threading.Thread(target=_build_loop, args=(c, sid), daemon=True).start()
+    return {"ok": True, "subject_id": sid}
+
+
+@app.get("/api/subjects")
+def api_subjects_list():
+    c = cfg()
+    subjects = _ensure_subjects(c)
+    return {
+        "active_subject_id": STATE.active_subject_id,
+        "identity_enabled": identity_enabled(c),
+        "subjects": [
+            {
+                **s,
+                "n_references": count_reference_clips(c, s["id"]),
+                "face_ready": has_face_gallery(c, s["id"]),
+            }
+            for s in subjects
+        ],
+    }
+
+
+@app.post("/api/subjects")
+def api_subjects_create(display_name: str, subject_id: Optional[str] = None):
+    c = cfg()
+    _ensure_subjects(c)
+    try:
+        meta = create_subject(c, display_name, subject_id=subject_id)
+    except (ValueError, FileExistsError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    with STATE.lock:
+        STATE.active_subject_id = meta["id"]
+    return {"ok": True, "subject": meta}
+
+
+@app.post("/api/subjects/{subject_id}/select")
+def api_subjects_select(subject_id: str):
+    c = cfg()
+    _ensure_subjects(c)
+    meta = load_meta(c, subject_id)
+    if meta is None:
+        raise HTTPException(404, "subject not found: %s" % subject_id)
+    with STATE.lock:
+        if STATE.mode != "idle":
+            raise HTTPException(409, "busy: current mode is %r" % STATE.mode)
+        STATE.active_subject_id = subject_id
+    return {"ok": True, "subject": meta}
+
+
+@app.patch("/api/subjects/{subject_id}")
+def api_subjects_rename(subject_id: str, display_name: str):
+    c = cfg()
+    meta = load_meta(c, subject_id)
+    if meta is None:
+        raise HTTPException(404, "subject not found: %s" % subject_id)
+    meta["display_name"] = (display_name or "").strip() or meta["display_name"]
+    save_meta(c, meta)
+    return {"ok": True, "subject": meta}
+
+
+@app.delete("/api/subjects/{subject_id}")
+def api_subjects_delete(subject_id: str):
+    c = cfg()
+    with STATE.lock:
+        if STATE.mode != "idle":
+            raise HTTPException(409, "busy: current mode is %r" % STATE.mode)
+        if STATE.active_subject_id == subject_id:
+            STATE.active_subject_id = None
+    try:
+        delete_subject(c, subject_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
     return {"ok": True}
 
 
@@ -1167,7 +1499,11 @@ def api_classes_create(class_name: str):
         raise HTTPException(400, "class name may not start with '__' (reserved)")
     c = cfg()
     add_class_to_config(c, class_name)
-    class_dir = c.path("data", "references", class_name)
+    c, sid = bind_active_subject(c, require=False)
+    if sid:
+        class_dir = os.path.join(subject_references_dir(c, sid), class_name)
+    else:
+        class_dir = c.path("data", "references", class_name)
     os.makedirs(class_dir, exist_ok=True)
     return {"ok": True, "name": class_name, "path": class_dir}
 
@@ -1180,9 +1516,60 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+DEFAULT_HOST = "127.0.0.1"
+
+
+def is_loopback(host):
+    """An empty host is NOT loopback: uvicorn binds every interface for it.
+
+    `HOST= python webapp/server.py` reaches asyncio as host="", which listens
+    on 0.0.0.0 just like the value this gate exists to refuse. An unset HOST is
+    handled by resolve_host() instead, which substitutes the loopback default.
+    """
+    return str(host).strip().lower() in LOOPBACK_HOSTS
+
+
+def resolve_host(value):
+    """HOST env -> bind address. Unset or blank means the loopback default."""
+    return (value or "").strip() or DEFAULT_HOST
+
+
+def check_exposure(host, token):
+    """Refuse to bind a non-loopback interface without a shared token.
+
+    Several routes are destructive to anyone who can reach them:
+    /api/clips/delete_all removes every saved clip, and /api/classes REWRITES
+    config.yaml. There is no auth, no CORS policy and no rate limiting, and the
+    README points at EC2 -- so HOST=0.0.0.0 is one env var away from exposing
+    all of that, plus a live camera feed, to the network.
+
+    This is not an auth system. It is a gate that makes exposing the demo a
+    deliberate act rather than an accident.
+    """
+    if is_loopback(host) or token:
+        return
+    raise SystemExit(
+        "refusing to bind HOST=%s without APP_TOKEN.\n"
+        "\n"
+        "This app has no authentication. On a non-loopback interface, anyone\n"
+        "who can reach it can delete every saved clip (/api/clips/delete_all),\n"
+        "rewrite config.yaml (/api/classes), and watch the camera.\n"
+        "\n"
+        "  APP_TOKEN=$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))') \\\n"
+        "  HOST=%s python webapp/server.py\n"
+        "\n"
+        "Then send it as `Authorization: Bearer $APP_TOKEN` on POST/DELETE.\n"
+        "Or leave HOST unset to stay on 127.0.0.1." % (host, host)
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.environ.get("HOST", "127.0.0.1")
+    host = resolve_host(os.environ.get("HOST"))
     port = int(os.environ.get("PORT", "8000"))
+    check_exposure(host, APP_TOKEN)
+    if APP_TOKEN and not is_loopback(host):
+        print("auth      : APP_TOKEN required on mutating requests")
     uvicorn.run(app, host=host, port=port)

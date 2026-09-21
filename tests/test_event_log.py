@@ -11,8 +11,6 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from src.event_log import (  # noqa: E402
     COLUMNS,
     EventLogWriter,
@@ -25,7 +23,6 @@ from src.event_log import (  # noqa: E402
 )
 
 ORIGIN = datetime.datetime(2026, 9, 2, 14, 0, 0, tzinfo=datetime.timezone.utc)
-
 
 def _writer(path, source_type="video", source_start_utc=None, run_id=None):
     return EventLogWriter(
@@ -40,11 +37,9 @@ def _writer(path, source_type="video", source_start_utc=None, run_id=None):
         source_start_utc=source_start_utc,
     )
 
-
 def _rows(path):
     with open(path, newline="", encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
-
 
 def test_header_written_once_across_runs():
     with tempfile.TemporaryDirectory() as d:
@@ -60,7 +55,6 @@ def test_header_written_once_across_runs():
         assert lines[0] == ",".join(COLUMNS)
         assert "run_id" not in lines[2]
 
-
 def test_column_order_matches_spec():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
@@ -69,7 +63,6 @@ def test_column_order_matches_spec():
         with open(path, encoding="utf-8") as fh:
             header = fh.readline().strip().split(",")
         assert header == COLUMNS
-
 
 def test_offline_writes_one_closed_row():
     with tempfile.TemporaryDirectory() as d:
@@ -88,7 +81,6 @@ def test_offline_writes_one_closed_row():
         assert row["tau_high"] == "0.720000"
         assert row["model_id"] == "stub-encoder"
 
-
 def test_offline_writer_refuses_open_rows():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
@@ -99,7 +91,6 @@ def test_offline_writer_refuses_open_rows():
                 pass
             else:
                 raise AssertionError("offline writer must refuse to write an open row")
-
 
 def test_live_open_then_close_shares_event_id():
     with tempfile.TemporaryDirectory() as d:
@@ -120,7 +111,6 @@ def test_live_open_then_close_shares_event_id():
         assert rows[0]["duration_sec"] == ""
         assert float(rows[0]["start_sec"]) == 10.0
 
-
 def test_read_events_takes_last_row_per_event():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
@@ -136,7 +126,6 @@ def test_read_events_takes_last_row_per_event():
         assert ev["end_sec"] == 18.5
         assert ev["score"] == 0.81
         assert not unclosed_events(path)
-
 
 def test_unclosed_event_survives_as_open():
     """A run that died mid-detection leaves a real start and no end."""
@@ -155,7 +144,6 @@ def test_unclosed_event_survives_as_open():
         still_open = unclosed_events(path)
         assert len(still_open) == 1 and still_open[0]["event_id"] == eid
 
-
 def test_wall_clock_derived_from_origin():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
@@ -165,7 +153,6 @@ def test_wall_clock_derived_from_origin():
         ev = read_events(path)[0]
         assert ev["start_utc"] == ORIGIN + datetime.timedelta(seconds=90.0)
         assert ev["end_utc"] == ORIGIN + datetime.timedelta(seconds=150.5)
-
 
 def test_unknown_origin_leaves_wall_clock_empty():
     """Never fabricate a datetime -- an empty cell is the honest answer."""
@@ -181,7 +168,6 @@ def test_unknown_origin_leaves_wall_clock_empty():
         assert float(row["start_sec"]) == 90.0
         assert read_events(path)[0]["start_utc"] is None
 
-
 def test_video_start_utc_opt_in_only():
     with tempfile.TemporaryDirectory() as d:
         video = os.path.join(d, "x.mp4")
@@ -190,7 +176,6 @@ def test_video_start_utc_opt_in_only():
         assert video_start_utc(video, infer_from_mtime=False) is None
         assert video_start_utc(video, infer_from_mtime=True) is not None
         assert video_start_utc(os.path.join(d, "missing.mp4"), True) is None
-
 
 def test_runs_are_distinguishable_in_one_file():
     with tempfile.TemporaryDirectory() as d:
@@ -207,7 +192,6 @@ def test_runs_are_distinguishable_in_one_file():
         # Same detection, different runs -> distinct events, not deduplicated.
         assert rows[0]["event_id"] != rows[1]["event_id"]
 
-
 def test_clip_path_round_trips():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
@@ -216,14 +200,12 @@ def test_clip_path_round_trips():
         ev = read_events(path)[0]
         assert ev["clip_path"] == "clips/clip_01/abc.mp4"
 
-
 def test_clip_path_absent_reads_as_none():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "events.csv")
         with _writer(path) as w:
             w.write_closed("hair_twirl", 1.0, 3.0, 0.9)
         assert read_events(path)[0]["clip_path"] is None
-
 
 def test_open_row_carries_no_clip_path():
     """A clip cannot exist before the event's extent is known."""
@@ -239,12 +221,11 @@ def test_open_row_carries_no_clip_path():
         assert rows[1]["clip_path"] == "clips/s/abc.mp4"
         assert read_events(path)[0]["clip_path"] == "clips/s/abc.mp4"
 
-
 def test_reads_a_log_written_before_clips_existed():
     """16-column logs predate the clip_path column and must still load."""
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "old.csv")
-        legacy = [c for c in COLUMNS if c != "clip_path"]
+        legacy = [c for c in COLUMNS if c not in ("clip_path", "subject_id")]
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=legacy)
             writer.writeheader()
@@ -260,17 +241,15 @@ def test_reads_a_log_written_before_clips_existed():
             )
         events = read_events(path)
         assert len(events) == 1 and events[0]["clip_path"] is None
-
+        assert events[0]["subject_id"] is None
 
 def test_live_session_id_format():
     sid = live_session_id(ORIGIN)
     assert sid == "live_20260902T140000Z"
 
-
 def test_empty_log_reads_as_no_events():
     with tempfile.TemporaryDirectory() as d:
         assert read_events(os.path.join(d, "nope.csv")) == []
-
 
 if __name__ == "__main__":
     tests = sorted(

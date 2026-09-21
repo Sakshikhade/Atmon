@@ -53,3 +53,4 @@
 | 2026-09-04 | Live first; References + Captures beside | Stage-first hierarchy; controls mapped to sections |
 | 2026-09-04 | Strip multi-hue wash / gradient brand / class rainbow / tabs | Looked AI-generated; restore restrained single-page tool |
 | 2026-09-04 | Analytics tab parked | Revisit later; keep detection workflow uncluttered |
+| 2026-09-21 | React (Vite) SPA in `webapp/ui`, build → `webapp/static` | Same DESIGN.md tokens; Apple HIG tool layout (sticky glass topbar, stage-first Live, system blue primary) |

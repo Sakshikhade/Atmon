@@ -32,6 +32,21 @@ L_HIP, R_HIP = 23, 24
 # and add noise when the lower body is out of frame or occluded by a desk.
 UPPER_BODY = list(range(0, 25))
 
+# Drawable skeleton, in UPPER_BODY-local indices. Torso + arms + hands only.
+#
+# Deliberately NO face-mesh edges: MediaPipe indices 1-10 are eyes, ears and
+# mouth corners, and joining them produces a scribble across the face that
+# reads as clutter rather than information. The head is represented by the nose
+# point alone (drawn as a joint, not an edge).
+POSE_EDGES = [
+    (11, 12),                      # shoulders
+    (11, 13), (13, 15),            # left upper arm, forearm
+    (12, 14), (14, 16),            # right upper arm, forearm
+    (15, 17), (15, 19), (15, 21),  # left hand
+    (16, 18), (16, 20), (16, 22),  # right hand
+    (11, 23), (12, 24), (23, 24),  # torso down to hips
+]
+
 
 class PoseExtractor:
     """MediaPipe PoseLandmarker, frozen, IMAGE mode.
@@ -87,25 +102,92 @@ class PoseExtractor:
                 return path
         return candidates[0]
 
-    def landmarks_for_clip(self, clip):
-        """uint8 RGB [T, H, W, 3] -> float32 [T, K, 3]; NaN rows where no pose."""
+    def detect_frame(self, frame):
+        """One uint8 RGB frame -> (xyz float32 [K, 3], visibility float32 [K]).
+
+        xyz rows are NaN where no pose was found. Coordinates are MediaPipe's
+        normalized image space: origin top-left, y down, and NOT clamped to
+        [0, 1] -- occluded joints are extrapolated outside the frame (crop.py
+        measured a hip at y = 1.94 on real footage).
+
+        `visibility` is the model's own confidence per landmark. landmarks_for_clip
+        has always discarded it; the overlay needs it to avoid drawing bones to
+        joints the model is guessing at.
+        """
         mp = self._mp
-        out = np.full((len(clip), len(UPPER_BODY), 3), np.nan, dtype=np.float32)
-        for i, frame in enumerate(clip):
-            image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame))
-            result = self.detector.detect(image)
-            if not result.pose_landmarks:
-                continue
-            landmarks = result.pose_landmarks[0]
-            if len(landmarks) <= max(UPPER_BODY):
-                continue
-            for j, idx in enumerate(UPPER_BODY):
-                lm = landmarks[idx]
-                out[i, j] = (lm.x, lm.y, lm.z)
-        return out
+        xyz = np.full((len(UPPER_BODY), 3), np.nan, dtype=np.float32)
+        vis = np.zeros(len(UPPER_BODY), dtype=np.float32)
+
+        image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                         data=np.ascontiguousarray(frame))
+        result = self.detector.detect(image)
+        if not result.pose_landmarks:
+            return xyz, vis
+        landmarks = result.pose_landmarks[0]
+        if len(landmarks) <= max(UPPER_BODY):
+            return xyz, vis
+        for j, idx in enumerate(UPPER_BODY):
+            lm = landmarks[idx]
+            xyz[j] = (lm.x, lm.y, lm.z)
+            vis[j] = float(getattr(lm, "visibility", 1.0) or 0.0)
+        return xyz, vis
+
+    def landmarks_for_clip(self, clip):
+        """uint8 RGB [T, H, W, 3] -> float32 [T, K, 3]; NaN rows where no pose.
+
+        Contract unchanged: the pose cache .npz and every DTW consumer depend on
+        this exact shape. It is now a stack of detect_frame calls -- IMAGE mode
+        is stateless, so per-frame and per-clip results are identical, and a
+        test locks that in.
+        """
+        if len(clip) == 0:
+            return np.full((0, len(UPPER_BODY), 3), np.nan, dtype=np.float32)
+        return np.stack([self.detect_frame(frame)[0] for frame in clip])
 
     def close(self):
         self.detector.close()
+
+
+def landmarks_to_overlay(xyz, visibility=None, min_visibility=0.5, mirror=True):
+    """Drawable points for the live preview, or None when there is no pose.
+
+    Returns a list of [x, y] (rounded, still normalized) or None per landmark,
+    ready to serialize. The whole return is None when nothing was detected, so
+    the client clears its canvas instead of holding a stale skeleton.
+
+    All of the geometry lives here, in Python, rather than in the page's
+    JavaScript -- there is no JS test runner in this repo, so anything that can
+    be wrong about coordinates is kept where pytest can reach it.
+
+    mirror: the preview is a CSS-mirrored selfie view, but the JPEG posted to
+    the server is the unmirrored source. Flipping x here, once, keeps the two
+    from drifting; the client never mirrors.
+
+    Coordinates are NOT clamped to [0, 1]. A canvas clips them naturally,
+    whereas clamping would pin a flailing wrist to the frame edge and draw a
+    bone that never existed.
+    """
+    xyz = np.asarray(xyz, dtype=np.float32)
+    if xyz.size == 0 or np.isnan(xyz).all():
+        return None
+
+    if visibility is None:
+        visibility = np.ones(len(xyz), dtype=np.float32)
+    visibility = np.asarray(visibility, dtype=np.float32)
+
+    points = []
+    for i in range(len(xyz)):
+        x, y = float(xyz[i][0]), float(xyz[i][1])
+        if np.isnan(x) or np.isnan(y) or visibility[i] < float(min_visibility):
+            points.append(None)
+            continue
+        if mirror:
+            x = 1.0 - x
+        points.append([round(x, 4), round(y, 4)])
+
+    if all(p is None for p in points):
+        return None
+    return points
 
 
 def normalize_pose(sequence):

@@ -15,11 +15,8 @@ closes that gap; these tests cover it directly and through the endpoint.
 """
 
 import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import add_class_to_config, load_config  # noqa: E402
 
@@ -36,13 +33,11 @@ classes:
     weights: {vjepa: 0.35, pose: 0.50, hands: 0.15}
 """
 
-
 @pytest.fixture()
 def workspace(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(BASE_CONFIG, encoding="utf-8")
     return str(path)
-
 
 def test_new_class_is_appended_and_loadable(workspace):
     cfg = load_config(workspace)
@@ -53,7 +48,6 @@ def test_new_class_is_appended_and_loadable(workspace):
     reloaded = load_config(workspace)
     assert reloaded.class_names == ["ear_cover", "head_nodding"]
     assert reloaded.class_cfg("head_nodding") == {"allow_flip": False}
-
 
 def test_existing_comments_and_classes_survive(workspace):
     cfg = load_config(workspace)
@@ -66,7 +60,6 @@ def test_existing_comments_and_classes_survive(workspace):
     reloaded = load_config(workspace)
     assert reloaded.class_cfg("ear_cover")["weights"] == {"vjepa": 0.35, "pose": 0.50, "hands": 0.15}
 
-
 def test_registering_the_same_class_twice_does_not_duplicate(workspace):
     cfg = load_config(workspace)
     add_class_to_config(cfg, "head_nodding")
@@ -77,14 +70,12 @@ def test_registering_the_same_class_twice_does_not_duplicate(workspace):
     assert reloaded.class_names == ["ear_cover", "head_nodding"]
     assert open(workspace, encoding="utf-8").read().count("head_nodding:") == 1
 
-
 def test_already_configured_class_is_a_noop(workspace):
     cfg = load_config(workspace)
     before = open(workspace, encoding="utf-8").read()
     add_class_to_config(cfg, "ear_cover")
     after = open(workspace, encoding="utf-8").read()
     assert before == after
-
 
 def test_a_second_new_class_is_appended_after_the_first(workspace):
     cfg = load_config(workspace)

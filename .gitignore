@@ -2,8 +2,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
-venv/
+webapp/ui/node_modules/
+webapp/ui/dist/
 
 # macOS
 .DS_Store
@@ -12,6 +12,9 @@ venv/
 # NOTE: src/pose.py reads ../pose_landmarker.task, which lives OUTSIDE this
 # repo. A clone elsewhere needs that file supplied or pose.model_path repointed.
 *.task
+models/*.pt
+models/*_checksum.txt
+models/.cache/
 
 # Derived artifacts: features, keypoints, prototype banks, calibration
 cache/
@@ -21,6 +24,7 @@ cache/
 # your own backup: losing them means re-recording.
 data/videos/
 data/references/
+data/subjects/
 data/events/
 data/clips/
 *.dets.json
@@ -28,3 +32,4 @@ data/clips/
 
 *.pem
 dev-Juno.pem
+.gstack/

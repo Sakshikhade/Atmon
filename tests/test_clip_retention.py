@@ -13,10 +13,7 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from src.clip_writer import BYTES_PER_GB, ClipStore  # noqa: E402
-
 
 def _make_clip(store, source_id, event_id, size_bytes, age_sec=0):
     path = store.path_for(source_id, event_id)
@@ -27,14 +24,12 @@ def _make_clip(store, source_id, event_id, size_bytes, age_sec=0):
         os.utime(path, (old, old))
     return path
 
-
 def test_path_layout_groups_by_source():
     with tempfile.TemporaryDirectory() as d:
         store = ClipStore(os.path.join(d, "clips"))
         path = store.path_for("clip_01", "abc-123")
         assert path.endswith(os.path.join("clips", "clip_01", "abc-123.mp4"))
         assert os.path.isdir(os.path.dirname(path)), "the directory must be created"
-
 
 def test_total_bytes_counts_every_source():
     with tempfile.TemporaryDirectory() as d:
@@ -43,7 +38,6 @@ def test_total_bytes_counts_every_source():
         _make_clip(store, "vid_b", "e2", 2000)
         assert store.total_bytes() == 3000
 
-
 def test_budget_is_a_no_op_when_under():
     with tempfile.TemporaryDirectory() as d:
         store = ClipStore(os.path.join(d, "clips"), max_total_gb=1.0)
@@ -51,7 +45,6 @@ def test_budget_is_a_no_op_when_under():
         deleted, freed = store.enforce_budget()
         assert (deleted, freed) == (0, 0)
         assert os.path.exists(kept)
-
 
 def test_budget_evicts_oldest_first():
     with tempfile.TemporaryDirectory() as d:
@@ -68,7 +61,6 @@ def test_budget_evicts_oldest_first():
         assert os.path.exists(middle) and os.path.exists(newest)
         assert store.total_bytes() <= store.max_total_bytes
 
-
 def test_budget_evicts_repeatedly_until_under():
     with tempfile.TemporaryDirectory() as d:
         store = ClipStore(os.path.join(d, "clips"))
@@ -81,7 +73,6 @@ def test_budget_evicts_repeatedly_until_under():
         assert deleted == 4
         assert store.total_bytes() <= store.max_total_bytes
 
-
 def test_budget_tolerates_an_empty_store():
     with tempfile.TemporaryDirectory() as d:
         store = ClipStore(os.path.join(d, "clips"))
@@ -89,18 +80,15 @@ def test_budget_tolerates_an_empty_store():
         assert store.enforce_budget() == (0, 0)
         assert store.total_bytes() == 0
 
-
 def test_gb_budget_converts_to_bytes():
     store = ClipStore("/tmp/nope", max_total_gb=5.0)
     assert store.max_total_bytes == 5 * BYTES_PER_GB
-
 
 def test_relative_path_is_project_rooted():
     with tempfile.TemporaryDirectory() as d:
         store = ClipStore(os.path.join(d, "clips"))
         path = store.path_for("vid", "e1")
         assert store.relative(path) == os.path.join("clips", "vid", "e1.mp4")
-
 
 def test_non_mp4_files_are_left_alone():
     """Eviction must not touch anything it did not write."""
@@ -114,7 +102,6 @@ def test_non_mp4_files_are_left_alone():
 
         store.enforce_budget()
         assert os.path.exists(notes)
-
 
 def test_relative_paths_resolve_from_the_project_root():
     """A clip_path in the event log must resolve from where the scripts run.
@@ -131,7 +118,6 @@ def test_relative_paths_resolve_from_the_project_root():
         with open(path, "wb") as fh:
             fh.write(b"x")
         assert os.path.exists(os.path.join(project, relative)), "must resolve from the project root"
-
 
 if __name__ == "__main__":
     tests = sorted(

@@ -14,14 +14,10 @@ through to LiveDetector and push_chunk.
 """
 
 import json
-import os
-import sys
 import threading
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import load_config  # noqa: E402
 from tests.fixtures import synthetic_clip, write_video  # noqa: E402
@@ -61,7 +57,6 @@ classes:
 
 FPS = 8.0
 
-
 class FakeCameraStream:
     """Stand-in for src.live.CameraStream: hands back synthetic frames on demand."""
 
@@ -83,7 +78,6 @@ class FakeCameraStream:
     def release(self):
         self.stopped = True
 
-
 def _landmarks(n_frames, n_points, wrist_idx, ref_idx):
     """A plausible, NaN-free landmark sequence: distinct wrist/reference points,
     everything else lightly jittered so normalize_pose/normalize_hand and their
@@ -94,7 +88,6 @@ def _landmarks(n_frames, n_points, wrist_idx, ref_idx):
     seq[:, wrist_idx] += (0.5, 0.5, 0.0)
     seq[:, ref_idx] += (0.6, 0.3, 0.0)
     return seq
-
 
 class FakePoseExtractor:
     def __init__(self, *args, **kwargs):
@@ -108,7 +101,6 @@ class FakePoseExtractor:
     def close(self):
         self.closed = True
 
-
 class FakeHandExtractor:
     def __init__(self, *args, **kwargs):
         self.closed = False
@@ -120,7 +112,6 @@ class FakeHandExtractor:
 
     def close(self):
         self.closed = True
-
 
 @pytest.fixture()
 def workspace(tmp_path):
@@ -140,7 +131,6 @@ def workspace(tmp_path):
     write_video(str(ref_dir / "ref1.mp4"), reference, fps=FPS)
 
     return str(config_path)
-
 
 def test_build_then_live_wires_pose_hands_and_calibrated_scale(workspace, monkeypatch):
     cfg = load_config(workspace)

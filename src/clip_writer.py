@@ -51,47 +51,85 @@ def _even(n):
     return n if n % 2 == 0 else n + 1
 
 
+class H264Writer:
+    """Streaming browser-playable H.264/yuv420p writer (PyAV, libx264).
+
+    Frames are encoded and muxed AS THEY ARRIVE. That is the whole point:
+    holding a span in memory to encode it at the end costs width*height*3 per
+    frame, so one 60s clip of 1080p source video is ~11 GB, and a pass that
+    collects several spans at once multiplies that.
+
+    Raises from the constructor if PyAV/libx264 is unavailable, so a caller can
+    fall back to open_writer() before it has consumed any frames.
+    """
+
+    def __init__(self, path, fps, size, is_rgb=True):
+        import av
+
+        self._av = av
+        self.path = path
+        self.is_rgb = bool(is_rgb)
+        self.src_w, self.src_h = int(size[0]), int(size[1])
+        # libx264 + yuv420p needs even dimensions; an odd source is padded.
+        self.out_w, self.out_h = _even(self.src_w), _even(self.src_h)
+
+        self.container = av.open(path, mode="w")
+        try:
+            rate = max(1, int(round(float(fps))) or 8)
+            stream = self.container.add_stream("libx264", rate=rate)
+            stream.width = self.out_w
+            stream.height = self.out_h
+            stream.pix_fmt = "yuv420p"
+            stream.options = {"crf": "23", "preset": "veryfast"}
+            self.stream = stream
+        except Exception:
+            self.container.close()
+            raise
+
+    def write(self, frame):
+        import numpy as np
+
+        if not self.is_rgb:
+            # BGR (OpenCV) -> RGB for VideoFrame
+            import cv2
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if frame.shape[1] != self.out_w or frame.shape[0] != self.out_h:
+            padded = np.zeros((self.out_h, self.out_w, 3), dtype=np.uint8)
+            padded[: frame.shape[0], : frame.shape[1]] = frame
+            frame = padded
+        video_frame = self._av.VideoFrame.from_ndarray(frame, format="rgb24")
+        for packet in self.stream.encode(video_frame):
+            self.container.mux(packet)
+
+    def close(self):
+        try:
+            for packet in self.stream.encode():
+                self.container.mux(packet)
+        finally:
+            self.container.close()
+
+
 def write_frames_h264(path, frames, fps, is_rgb=True):
     """Write frames as browser-playable H.264/yuv420p via PyAV (libx264).
 
     frames: iterable of HxWx3 uint8 arrays (RGB if is_rgb else BGR).
     Returns path. Raises if libx264 is unavailable.
     """
-    import av
-    import numpy as np
-
-    frames = list(frames)
-    if not frames:
-        raise ValueError("no frames")
-    height, width = frames[0].shape[:2]
-    out_w, out_h = _even(width), _even(height)
-
-    container = av.open(path, mode="w")
+    iterator = iter(frames)
     try:
-        rate = max(1, int(round(float(fps))) or 8)
-        stream = container.add_stream("libx264", rate=rate)
-        stream.width = out_w
-        stream.height = out_h
-        stream.pix_fmt = "yuv420p"
-        stream.options = {"crf": "23", "preset": "veryfast"}
+        first = next(iterator)
+    except StopIteration:
+        raise ValueError("no frames")
 
-        for frame in frames:
-            if not is_rgb:
-                # BGR (OpenCV) -> RGB for VideoFrame
-                import cv2
-
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            if frame.shape[1] != out_w or frame.shape[0] != out_h:
-                padded = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-                padded[: height, : width] = frame
-                frame = padded
-            video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
-            for packet in stream.encode(video_frame):
-                container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
+    height, width = first.shape[:2]
+    writer = H264Writer(path, fps, (width, height), is_rgb=is_rgb)
+    try:
+        writer.write(first)
+        for frame in iterator:
+            writer.write(frame)
     finally:
-        container.close()
+        writer.close()
     return path
 
 
@@ -215,10 +253,16 @@ def extract_clips_from_video(video_path, requests, store, source_id, pre_roll=2.
         spans.append({"event_id": request["event_id"], "start": start, "end": end, "writer": None})
 
     written = {}
-    # Buffer BGR frames per span, then write H.264 once each span ends. Keeps
-    # one sequential pass over the source without OpenCV's unplayable mp4v.
-    for span in spans:
-        span["frames"] = []
+
+    def _close(span):
+        writer = span["writer"]
+        if writer is None:
+            return
+        span["writer"] = None
+        if isinstance(writer, H264Writer):
+            writer.close()
+        else:
+            writer.release()
 
     try:
         index = 0
@@ -229,28 +273,30 @@ def extract_clips_from_video(video_path, requests, store, source_id, pre_roll=2.
             t = index / fps
             index += 1
             for span in spans:
-                if span["start"] <= t <= span["end"]:
-                    span["frames"].append(frame)
+                if not (span["start"] <= t <= span["end"]):
+                    # Past the end: flush this span now rather than holding an
+                    # encoder open for the rest of the pass.
+                    if t > span["end"]:
+                        _close(span)
+                    continue
+                if span["writer"] is None:
+                    path = store.path_for(source_id, span["event_id"])
+                    size = (frame.shape[1], frame.shape[0])
+                    # H.264 first: OpenCV's mp4v fallback is unplayable in
+                    # browsers. Frames stream into the encoder, never a list --
+                    # buffering a whole span is gigabytes on HD source.
+                    try:
+                        span["writer"] = H264Writer(path, fps, size, is_rgb=False)
+                    except Exception:
+                        span["writer"], _ = open_writer(path, fps, size)
+                    written[span["event_id"]] = path
+                span["writer"].write(frame)
     finally:
-        capture.release()
-
-    for span in spans:
-        if not span["frames"]:
-            continue
-        path = store.path_for(source_id, span["event_id"])
         try:
-            write_frames_h264(path, span["frames"], fps, is_rgb=False)
-        except Exception:
-            writer, _ = open_writer(
-                path, fps, (span["frames"][0].shape[1], span["frames"][0].shape[0])
-            )
-            try:
-                for frame in span["frames"]:
-                    writer.write(frame)
-            finally:
-                writer.release()
-        written[span["event_id"]] = path
-        span["frames"] = []
+            for span in spans:
+                _close(span)
+        finally:
+            capture.release()
 
     return written
 

@@ -80,7 +80,10 @@ def main():
     for labels in all_labels:
         video_path = find_video(cfg, labels["video_id"], videos_dir)
         _, bundle, class_names, grid, parts = grid_for_video(cfg, bank, video_path)
-        prepared.append(prepare_video(cfg, bank, bundle, labels, class_names, grid))
+        prepared.append(prepare_video(
+            cfg, bank, bundle, labels, class_names, grid,
+            pose_sequences=parts.get("_pose_sequences"),
+        ))
         # Collect RAW appearance similarity so the live path can be given a
         # background scale. Live estimates spread from a short window and gets it
         # ~6x too small, which makes an offline-calibrated threshold meaningless
@@ -120,8 +123,11 @@ def main():
     detections, ground_truth = [], []
     for p in prepared:
         detections.extend(
-            group_detections(p["class_names"], p["grid"], p["starts"], cfg,
-                             best["tau_high"], p["chunk_sec"])
+            group_detections(
+                p["class_names"], p["grid"], p["starts"], cfg,
+                best["tau_high"], p["chunk_sec"],
+                pose_sequences=p.get("pose_sequences"),
+            )
         )
         ground_truth.extend(p["events"])
     labels_axis, matrix = confusion_matrix(detections, ground_truth, cfg.class_names, args.tiou)

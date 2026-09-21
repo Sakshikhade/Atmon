@@ -183,7 +183,10 @@ def sweep_thresholds(prepared, cfg, n_steps=60, tiou_threshold=0.5):
         detections = []
         for p in prepared:
             detections.extend(
-                group_detections(p["class_names"], p["grid"], p["starts"], cfg, tau, p["chunk_sec"])
+                group_detections(
+                    p["class_names"], p["grid"], p["starts"], cfg, tau, p["chunk_sec"],
+                    pose_sequences=p.get("pose_sequences"),
+                )
             )
         result = evaluate(detections, ground_truth, total_hours, tiou_threshold)
         rows.append(
@@ -218,11 +221,13 @@ def select_threshold(rows, max_false_alarms_per_hour):
     return min(rows, key=lambda r: r["false_alarms_per_hour"]), False
 
 
-def prepare_video(cfg, bank, feats_bundle, labels, class_names=None, grid=None):
+def prepare_video(cfg, bank, feats_bundle, labels, class_names=None, grid=None,
+                  pose_sequences=None):
     """Score grid + ground truth for one labeled video, computed once.
 
     Pass class_names/grid when the caller already fused the streams (pipeline
     .grid_for_video); otherwise the embedding stream is scored here alone.
+    pose_sequences (optional) enables the offline wrist-near-ear gate.
     """
     if grid is None:
         class_names, grid = score_grid(feats_bundle["feats"], bank, cfg)
@@ -238,6 +243,7 @@ def prepare_video(cfg, bank, feats_bundle, labels, class_names=None, grid=None):
         "chunk_sec": feats_bundle["chunk_sec"],
         "duration": duration,
         "events": list(labels["events"]),
+        "pose_sequences": pose_sequences,
     }
 
 

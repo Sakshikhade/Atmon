@@ -21,13 +21,10 @@ hold that invariant:
 
 import json
 import os
-import sys
 import threading
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import load_config  # noqa: E402
 from tests.fixtures import synthetic_clip, write_video  # noqa: E402
@@ -62,7 +59,6 @@ classes:
     allow_flip: true
 """
 
-
 class NoPosePoseExtractor:
     """Detects nothing, on every frame -- the real "camera can't see a pose"
     case that drives build_pose_templates to raise SystemExit."""
@@ -78,7 +74,6 @@ class NoPosePoseExtractor:
     def close(self):
         pass
 
-
 @pytest.fixture()
 def workspace(tmp_path):
     config_path = tmp_path / "config.yaml"
@@ -92,7 +87,6 @@ def workspace(tmp_path):
 
     return str(config_path)
 
-
 def _drain(queue_obj):
     msgs = []
     while True:
@@ -101,7 +95,6 @@ def _drain(queue_obj):
         except Exception:
             break
     return msgs
-
 
 def test_build_loop_reports_systemexit_and_resets_mode(workspace, monkeypatch):
     """A reference clip with no detectable pose makes the real
@@ -122,7 +115,6 @@ def test_build_loop_reports_systemexit_and_resets_mode(workspace, monkeypatch):
     assert server_mod.STATE.mode == "idle"
     kinds = [m["kind"] for m in _drain(q)]
     assert "build_error" in kinds
-
 
 def test_live_loop_reports_systemexit_and_resets_mode(workspace, monkeypatch):
     """load_bank raises SystemExit for a bank file that exists but has no
@@ -150,7 +142,6 @@ def test_live_loop_reports_systemexit_and_resets_mode(workspace, monkeypatch):
     kinds = [m["kind"] for m in _drain(q)]
     assert "live_error" in kinds
 
-
 def test_record_stop_write_failure_does_not_strand_recording_mode(workspace, monkeypatch):
     """A write_frames failure while saving a recorded clip must not leave
     STATE.mode stuck at "recording" -- that would 409 "busy" on every future
@@ -177,7 +168,6 @@ def test_record_stop_write_failure_does_not_strand_recording_mode(workspace, mon
     assert resp.status_code == 500
     assert server_mod.STATE.mode == "idle"
 
-
 def test_upload_write_failure_does_not_strand_building_mode(workspace, monkeypatch):
     """Same invariant for the upload path: a write failure after mode has
     already advanced to "building" must still return to "idle"."""
@@ -200,7 +190,6 @@ def test_upload_write_failure_does_not_strand_building_mode(workspace, monkeypat
 
     assert resp.status_code == 500
     assert server_mod.STATE.mode == "idle"
-
 
 def test_api_classes_create_registers_class_in_config_not_just_on_disk(workspace, monkeypatch):
     """The bug this whole file is really about: /api/classes (what the "New

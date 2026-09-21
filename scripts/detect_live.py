@@ -12,16 +12,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import load_config, require_tau_high  # noqa: E402
+from src.config import calibration_status, load_config, require_tau_high  # noqa: E402
 from src.encoder import build_encoder  # noqa: E402
+from src.face_id import identity_enabled  # noqa: E402
 from src.live import run_live  # noqa: E402
 from src.prototypes import load_bank  # noqa: E402
+from src.subjects import bind_subject  # noqa: E402
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--camera", type=int, default=None, help="override live.camera_index")
+    parser.add_argument("--subject-id", default=None,
+                        help="active subject (required when identity.enabled)")
     parser.add_argument("--max-seconds", type=float, default=None, help="stop after N seconds")
     parser.add_argument("--list-cameras", action="store_true",
                         help="probe camera indices and exit")
@@ -40,13 +44,29 @@ def main():
         return 0
 
     bank_cfg = load_config(args.config)
+    if identity_enabled(bank_cfg) and not args.subject_id:
+        raise SystemExit("identity.enabled requires --subject-id")
+    if args.subject_id:
+        bind_subject(bank_cfg, args.subject_id)
     bank, w_base_sec = load_bank(bank_cfg)
     cfg = load_config(args.config, w_base_sec=w_base_sec)
+    if args.subject_id:
+        bind_subject(cfg, args.subject_id)
     tau_high = require_tau_high(cfg)
+
+    status = calibration_status(cfg)
+    banner = "%.4f (from %s)" % (tau_high, status["source"] or "?")
+    if status["state"] != "calibrated":
+        banner += "  [%s]" % status["state"].upper()
+    print("tau_high  : %s" % banner)
+    if status["detail"]:
+        print("            %s" % status["detail"])
 
     if args.camera is not None:
         cfg["live"]["camera_index"] = args.camera
     print("camera    : index %d" % cfg["live"]["camera_index"])
+    if args.subject_id:
+        print("subject   : %s" % args.subject_id)
 
     encoder = build_encoder(cfg, batch_size=1)
     print("device    : %s (autocast=%s)" % (encoder.device, encoder.autocast_dtype or "off"))
@@ -65,7 +85,8 @@ def main():
             print("  [short] %-20s %8.2fs -> %8.2fs  below min duration; open row stands" % (
                 event["class"], event["start"], event["end"]))
 
-    run_live(cfg, encoder, bank, tau_high, on_event=on_event, max_seconds=args.max_seconds)
+    run_live(cfg, encoder, bank, tau_high, on_event=on_event,
+             max_seconds=args.max_seconds, subject_id=args.subject_id)
     print("event log : %s" % cfg.path(cfg["event_log"]["path"]))
     return 0
 

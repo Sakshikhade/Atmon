@@ -14,6 +14,7 @@ import os
 import numpy as np
 
 from src.chunker import iter_frames
+from src.crop import crop_tag
 from src.crop import enabled as crop_enabled
 
 # Reserved keys in the npz. Class names may not start with "__".
@@ -21,11 +22,27 @@ W_BASE_KEY = "__w_base_sec__"
 _RESERVED = (W_BASE_KEY,)
 
 
-def bank_path(cfg):
-    """One bank per backbone -- prototypes from one encoder are meaningless
-    against another's features."""
-    return cfg.path("cache", "prototypes_%s.npz" % cfg.get("backbone", "vjepa"))
+def bank_path(cfg, subject_id=None):
+    """One bank per backbone AND per crop setting (and per subject when bound).
 
+    Prototypes from one encoder are meaningless against another's features, and
+    a bank built uncropped is meaningless against cropped targets: turning on
+    crop.enabled would otherwise silently reuse the uncropped bank, so
+    references and targets diverge by a resize. That is pitfall 14.1, the
+    project's named #1 silent failure, and it looks like a result rather than
+    an error. Keyed the same way as features.cache_path.
+
+    When cfg is bound via subjects.bind_subject (or subject_id is passed), the
+    bank lives under cache/prototypes/<subject_id>/ so multi-user galleries
+    cannot silently share one child's references.
+    """
+    tag = crop_tag(cfg)
+    suffix = "" if tag == "none" else "__%s" % tag
+    name = "prototypes_%s%s.npz" % (cfg.get("backbone", "vjepa"), suffix)
+    sid = subject_id if subject_id is not None else cfg.get("_subject_id")
+    if sid:
+        return cfg.path("cache", "prototypes", sid, name)
+    return cfg.path("cache", name)
 
 def load_reference_clip(path, working_fps, backend=None):
     """A reference clip, whole, as uint8 RGB [T, H, W, 3]."""
@@ -150,7 +167,11 @@ def build_bank(cfg, encoder, references_dir=None, verbose=True):
 
     Returns (bank, w_base_sec) where bank maps class name -> [n_variants, D].
     """
-    references_dir = references_dir or cfg.path("data", "references")
+    references_dir = (
+        references_dir
+        or cfg.get("_references_dir")
+        or cfg.path("data", "references")
+    )
     proto_cfg = cfg["prototypes"]
     rng = np.random.default_rng(int(proto_cfg.get("seed", 0)))
     working_fps = float(cfg["working_fps"])

@@ -1,261 +1,396 @@
 # Few-Shot Action Detection
 
-Implementation of [proj_desc.md](proj_desc.md). Frozen V-JEPA 2 encoder plus
-nearest-prototype matching: one reference clip per action class, and every
-occurrence of those actions is found in a longer video or a live camera feed.
-No training in v1.
+Frozen encoder + nearest-prototype matching: teach each action with a short
+reference clip, then find every occurrence in a longer video or a live feed.
+No training in v1. Spec: [proj_desc.md](proj_desc.md). Measurement history:
+[PLAN.md](PLAN.md).
+
+**Default backbone:** X-CLIP (`microsoft/xclip-base-patch16`).
+
+Before trusting any number this produces, read
+[Verification status](#verification-status--read-this-before-trusting-anything).
+**The threshold this repo ships with is an uncalibrated demo preset.**
+
+## Quick start — web demo
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# Frontend (React). Rebuild after UI changes: cd webapp/ui && npm install && npm run build
+# Output lands in webapp/static/ (what FastAPI serves).
+python webapp/server.py
+# open http://127.0.0.1:8000  (HOST / PORT env vars override)
+#
+# Optional hot reload while developing UI:
+#   terminal A: python webapp/server.py
+#   terminal B: cd webapp/ui && npm run dev   # http://127.0.0.1:5173 proxies /api
+```
+
+Flow: **References** (record or upload a 2–4 s clip per class → bank rebuilds) →
+**Live** (browser webcam) → **Captures** (saved detection clips).
+
+Live capture uses **this device’s browser webcam** by default (`getUserMedia` →
+JPEG frames → `/api/frame`). That is required on headless hosts (e.g. EC2) that
+have no `/dev/video*`. Server-side OpenCV cameras remain available via
+`source=server` for local CLI / machines with a physical cam.
+
+### Pose landmarker (ear gate + skeleton overlay)
+
+MediaPipe `pose_landmarker.task` is required for:
+- the **ear_cover wrist-near-ear gate** (live and offline)
+- the live **skeleton overlay** (`overlay.enabled: true`)
+
+It is **not** the DTW pose score stream (`pose.enabled` stays false).
+
+```bash
+mkdir -p models
+# Download MediaPipe Pose Landmarker (lite/full) as:
+#   models/pose_landmarker.task
+# Or set pose.model_path in config.yaml.
+# *.task files are gitignored — supply them per machine / deploy.
+```
+
+Without the file, live sessions that need the wrist gate abort with a clear
+error; offline detect continues appearance-only and warns that the gate is
+unguarded. Overlay-only failures degrade softly in the web demo.
+
+### EdgeFace (planned — not wired yet)
+
+[Idiap EdgeFace-XS-GAMMA](https://huggingface.co/Idiap/EdgeFace-XS-GAMMA)
+(`edgeface_xs_gamma_06`, ~1.77M params) is downloaded locally for a future
+face-embedding path. **It is not used by detection today.**
+
+```bash
+mkdir -p models
+# From the Hugging Face repo Idiap/EdgeFace-XS-GAMMA:
+#   models/edgeface_xs_gamma_06.pt
+#   models/edgeface_xs_gamma_06_checksum.txt   # MD5 ebf343ca6930bd4d7cfea256cf14d703
+#
+# Or with huggingface_hub:
+#   python -c "from huggingface_hub import hf_hub_download; \
+#     hf_hub_download('Idiap/EdgeFace-XS-GAMMA','edgeface_xs_gamma_06.pt',local_dir='models')"
+```
+
+**Requirements (when we wire it):**
+- Weights: `models/edgeface_xs_gamma_06.pt` (gitignored; ~6.8 MB)
+- Runtime: PyTorch + a face-align preprocess (model card uses
+  `face_alignment.align` + normalize mean/std `0.5`)
+- Architecture code from the EdgeFace project (checkpoint alone is not enough)
+- License: [CC BY-NC-SA 4.0](https://huggingface.co/Idiap/EdgeFace-XS-GAMMA) —
+  non-commercial; keep that constraint in mind for any deployment
+
+Do **not** commit the `.pt` binary.
+
+### Multi-user subjects (Active Subject + EdgeFace)
+
+When `identity.enabled: true` (shipped default), the demo is **multi-user on one
+device**:
+
+1. Create / select a **subject** in the web UI (or `--subject-id` on CLI).
+2. Record action reference clips **for that subject** → bank + face gallery are
+   harvested from those clips (no separate face-enroll step).
+3. Live only opens detections when the camera face matches that subject’s
+   gallery (`match_threshold` is an **UNCALIBRATED** demo preset).
+
+This is an explicit exception to the earlier “no person re-ID” non-goal in
+[proj_desc.md](proj_desc.md) §1 — identity is a session gate, not action fusion.
+
+Layout: `data/subjects/<id>/{meta.json,references/,face/}`. Legacy
+`data/references/` migrates once into subject `default`.
 
 ## Status
 
-| Spec | What | State |
-| :--- | :--- | :--- |
-| Phase 1 (§5) | Chunk encoding with cache | built |
-| Phase 2 (§6) | Prototype bank | built |
-| Phase 3 (§7) | Scoring and grouping | built |
-| Phase 4 (§8) | Evaluation and calibration | built |
-| §9 | Event log | built, **tests pass** |
-| §9.6 | Per-event clip saving | built, retention **tests pass** |
-| §10 | Live capture | built |
-| §11.3 | Pose stream (DTW on keypoints) | built, **disabled** — harmful held out |
-| — | Hand stream (21 finger landmarks) | built, **disabled** — harmful held out |
-| — | Pose-derived crop | built, **disabled** — no-op on all footage tested |
-| — | Backbone swap (X-CLIP) | **default**, mAP@0.5 0.750 held out |
-| Phase 5 (§11) | Periodicity / linear head / pose / localizer | **not built** — gated behind "only if Phase 4 falls short" |
+| Area | State |
+| :--- | :--- |
+| Chunk encoding + cache | built |
+| Prototype bank | built |
+| Scoring / grouping / hysteresis | built |
+| Calibration + event metrics | built (code); **never run on real labels here** |
+| Event log (§9) | built, tested |
+| Per-event clips (§9.6) | built — **H.264 via PyAV** for browser playback |
+| Live capture (§10) | built — CLI + web |
+| Web demo (`webapp/`) | built — browser webcam, SSE events, gallery |
+| Pose DTW fusion | built, **disabled** (harmful held out) |
+| Hand DTW fusion | built, **disabled** (harmful held out) |
+| Ear-cover wrist-near-ear gate | **on** (geometry only; does not enable DTW) |
+| Hair-twirling open confirm | **3 s** sustained above τ before fire |
+| Skeleton overlay on live preview | **on** (rendering only; does not enable DTW) |
+| EdgeFace face embeddings | **on** (Active Subject gate; harvest-from-refs) |
+| Multi-user subjects | **on** (select subject before Live / record) |
+| Phase 5 (periodicity / linear head) | not built |
+
+**219 tests passing** (`python -m pytest -q`).
 
 ## Verification status — read this before trusting anything
 
-**127 tests passing** (`python -m pytest tests/ -q`). Everything except the
-encoder and video I/O is covered — pooling, similarity, hysteresis, NMS,
-event-level metrics, threshold selection, the event log, clip retention, and the
-full offline and live paths driven end to end against the stub encoder.
+**The shipped threshold is not calibrated.** `cache/calibration.json` holds a
+fixed 1.5σ demo preset, `config.yaml` has `tau_high: null`, and `data/labels/`
+is empty. Spec §8 and pitfall §14.5 both forbid an eye-picked threshold. The UI
+and both CLI entry points now say `UNCALIBRATED` wherever that threshold is
+shown, and nothing but `scripts/calibrate.py` may write the sidecar — but the
+number itself is still a guess until a real sweep runs.
 
-**Held-out result.** X-CLIP appearance, calibrated on eval1+eval2 and tested on
-eval3 — 9.3 minutes, a room no reference has seen, 74% background, including a
-64-second hand-on-chin hard negative:
+Three further knobs are also hand-set from live observation, not swept, and
+multiply the global τ before anything opens: `ear_cover.tau_scale: 1.8`,
+`hair_twirling.tau_scale: 2.0`, and `hair_twirling.confirm_sec: 3.0`. Reset them
+to 1.0 / 0.0 before any calibration run or the sweep optimizes one knob with two
+eye-picked multipliers frozen inside its objective.
 
-```
-P 1.00   R 0.75   mAP@0.5 0.750   FA/h 0.0   tp/fp/fn 3/0/1
-```
-
-Three of four events at tIoU 0.77–0.96, no false positives, nothing fired on the
-chin rest. spec §13 expects 55–68 mAP@0.5 for long well-separated actions.
-
-The same configuration on V-JEPA 2 scores **0.000**. See [PLAN.md](PLAN.md) §5.
-
-**Encoder speed on an 8 GB M3:** X-CLIP 0.36 s/clip, SigLIP 0.16, V-JEPA 1.68.
-At `chunk_sec: 2.0`, X-CLIP is ~0.18× real time, so live capture has real
-headroom for the first time.
+**What the tests do and do not cover.** Everything except the encoder and video
+I/O is covered — pooling, similarity, hysteresis, NMS, event-level metrics,
+threshold selection, the event log, clip retention, calibration provenance, the
+wrist gate, and the full offline and live paths driven end to end against a stub
+encoder.
 
 Still uncovered, and the most likely places for a first bug:
 
 - **Video encode/decode.** `write_frames`, `extract_clips_from_video`,
   `FrameRetentionBuffer`, and the `chunker.py` backend chain need OpenCV and,
   for the live path, a camera. Nothing has exercised them.
+- **Most of the web layer.** Only four routes are exercised by tests
+  (`/api/frame`, `/api/classes`, `/api/record/stop`, `/api/references/upload`)
+  out of sixteen, and there is no frontend test runner at all — the frame pump,
+  SSE handlers, and gallery rendering in the React UI are unexercised.
 
-## Measured stream ablation
+## Historical result (footage not in this repository)
 
-`scripts/ablate.py` runs every stream/crop combination over the labelled eval set
-and reports chunk-level **d'** and **AUROC** — diagnostic instruments for "can
-the representation see this behaviour", never the reported metric (that stays
-event-level, spec §14.4).
-
-On eval1 (60s, 5 instances — thin, treat as directional):
+X-CLIP appearance only, calibrated on eval1+eval2, tested on eval3 — 9.3
+minutes, a room no reference had seen, 74 % background, including a 64-second
+hand-on-chin hard negative:
 
 ```
-setup              ear_cover            hair_twirling
-vjepa only         d' +2.50 AUC 0.97    d' +0.49 AUC 0.58
-+ pose             d' +2.60 AUC 0.96    d' +0.53 AUC 0.60
-+ hands            d' +2.50 AUC 0.97    d' +1.46 AUC 0.83
-+ pose + hands     d' +2.60 AUC 0.96    d' +1.19 AUC 0.73
+P 1.00   R 0.75   mAP@0.5 0.750   FA/h 0.0   tp/fp/fn 3/0/1
 ```
 
-**The hand stream is what rescues hair_twirling** (0.58 -> 0.83 AUROC). Pose
-alone barely moves it and, mixed back in at weight 0.25, actively drags it down
-— pose has no finger landmarks, so for a finger behaviour it contributes noise.
-Class weights now reflect that: hair_twirling is hands-dominant with pose at
-zero, ear_cover stays pose-leaning.
+The same configuration on V-JEPA 2 scores **0.000**; SigLIP 0.500. See
+[PLAN.md](PLAN.md) §5.
 
-**Cropping is a no-op on this footage** and correctly so: the subject spans the
-whole frame, so there is nothing to crop away. It stays enabled because the
-deployment case — a room camera where the subject is small in frame — is exactly
-where it pays, and that case is untested here.
+**This is not reproducible from this tree.** The eval footage is not here, and
+there is no held-out scorer — `detect.py` writes `dets.json` but nothing reads
+it. Read the numbers with PLAN.md §5's own caveats attached: four instances, so
+recall moves in steps of 0.25, and FA/h 0.0 over seven minutes means "below
+about 8/hour", not zero.
+
+**Encoder speed on an 8 GB M3:** X-CLIP 0.36 s/clip, SigLIP 0.16, V-JEPA 1.68.
+At `chunk_sec: 2.0`, X-CLIP is ~0.18× real time, so live capture has headroom.
+
+## You do not have enough data yet
+
+`data/references/` has exactly **one clip per class, all from one setting**.
+`data/videos/` does not exist and `data/labels/` is empty, so no offline run,
+no calibration, and no evaluation can happen here. `cache/features/` has never
+been created — `detect.py` has never run against a file in this tree.
+
+[PLAN.md](PLAN.md) §7 is explicit that data, not code, is the binding
+constraint. Its gap table, against what is actually present:
+
+| Need | Have |
+| :--- | :--- |
+| References from ≥2 settings per action | 1 setting |
+| An eval video from a never-referenced setting | none |
+| ≥10 min of background-heavy footage | none |
+| ≥20 instances per class | none labeled |
+
+`tests/fixtures.py` and `tests/stub_encoder.py` stand in: synthetic clips of a
+moving square, and a numpy-only encoder exposing the same `encode_clips`
+surface as the real one. `tests/test_pipeline.py` drives the real prototype,
+scoring, grouping, and event-log code over them — only the encoder is swapped.
+That verifies plumbing and says nothing about how the real backbone scores real
+behaviour.
+
+`calibrate.py` warns when you are under the spec's ≥20 instances / ≥30 minutes
+and will still run. A threshold calibrated on less is not trustworthy.
+
+## Live behaviour notes
+
+- **Warmup:** ~15 background chunks (~30 s at `chunk_sec: 2.0`) before any class
+  may open. The UI waits for `detector.ready`, not a bare chunk counter.
+- **`hair_twirling.confirm_sec: 3.0`:** score must stay above that class’s τ for
+  ~3 s; single-chunk spikes reset and do not open. Event start is stamped at the
+  beginning of the confirming streak.
+- **`hair_twirling.tau_scale: 2.0`:** effective open bar ≈ 3.0σ (global τ × scale).
+- **`ear_cover`:** raised τ + wrist-near-ear gate (MediaPipe pose landmarker).
+  The gate is evaluated per class against that class’s own
+  `wrist_near_ear_threshold`, on both live and offline (`group_detections`).
+  Needs `models/pose_landmarker.task` (see above).
+- **Clips:** `pre_roll_sec: 1.0` / `post_roll_sec: 2.0`. Written as browser-playable
+  H.264 (`libx264`); OpenCV’s `mp4v` fallback is not used when PyAV is available.
+- **Backpressure:** frames are always dropped rather than queued — the encoder
+  cannot keep up with a 30 fps camera and only needs `working_fps`. The drop
+  rate is reported instead. `pose_frame` SSE messages are also dropped for a
+  subscriber whose queue is backed up; detection events never are.
+
+## Skeleton overlay
+
+`overlay.enabled: true` draws the MediaPipe skeleton on the live preview. It is
+**rendering only** and does not turn the measured-harmful DTW pose stream back
+on: the landmarker is loaded with `templates = None`, so `active_streams` stays
+`["vjepa"]`. `tests/test_overlay_stream_isolation.py` runs the live loop with
+the overlay off and on and asserts the emitted detections are unchanged.
+
+Pose is computed **per frame**, not per chunk. Per chunk it ran after the
+X-CLIP encode, so landmarks describing `t ∈ [T, T+2]` only arrived at
+`T+2+encode` — 2 to 3.5 s stale, which puts a drawn hand at an ear seconds
+after the real one came down. Per frame costs the same: `landmarks_for_clip`
+already ran `detect()` on all 16 frames of every 2 s chunk, which is the same
+8/sec.
+
+Measured on an 8 GB M3:
+
+- `detect()` with a real subject in frame: **20.9 ms/frame** mean, p95 21.4,
+  against a 125 ms budget (`1000 / working_fps`). Hence `stride: 1`.
+- Live session: **7.2 Hz** sustained, median gap 126 ms — but **max 900 ms**
+  across an X-CLIP encode, since the capture loop blocks there. `max_age_ms`
+  must exceed that or the skeleton blanks once per chunk; 700 blinked, so the
+  shipped value is **1200**.
+
+The skeleton visibly steps at 8 Hz against a 30 fps video. That is the rate the
+detector samples at. It holds between landmark arrivals rather than
+interpolating — inventing joint positions no model produced is the wrong
+property for an instrument. It draws white over a dark outline, switching to
+the `#007aff` accent while any detection is open, and clears when the subject
+leaves frame. The **Skeleton** button toggles it per browser (`localStorage`).
+
+Coordinates are mirrored once, server-side, in `landmarks_to_overlay()`, and
+the `live_started` payload carries both the mirror flag and the edge topology
+so the page cannot drift from `UPPER_BODY`. The canvas takes the video's
+intrinsic size and the same `object-fit: cover`, so registration holds on a
+16:9 camera in the 4:3 slot without any JS cover arithmetic.
 
 ## Setup
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 Runs on CUDA, Apple Silicon (MPS), or CPU — `select_device()` picks in that
 order. Autocast is bf16 on CUDA where supported, fp16 otherwise, and **fp32 on
-MPS**, where fp16 autocast is unreliable across torch versions and silently
-degrades similarity.
+MPS**.
 
-The active backbone (`backbone: xclip` in `config.yaml`, `microsoft/xclip-base-patch16`,
-~750 MB) downloads automatically into the default Hugging Face cache
-(`~/.cache/huggingface/hub`) the first time anything encodes a clip. To fetch it
-up front instead of waiting on the first run:
+The X-CLIP weights (~750 MB) download into the Hugging Face cache on first
+encode. Prefetch:
 
 ```bash
 python3 -c "from transformers import AutoProcessor, XCLIPModel; m='microsoft/xclip-base-patch16'; AutoProcessor.from_pretrained(m); XCLIPModel.from_pretrained(m)"
 ```
 
-Requires internet access once; nothing else to configure — the cache location
-is not overridden anywhere in this repo.
+## Reference clips
 
-## Reference clip duration
+**2–4 s of the action itself**, one directory per class under
+`data/references/<class>/`.
 
-**At least 2.0 s with the shipped config, and no longer than the shortest
-instance you want to detect.** Both bounds are load-bearing:
+- **Floor** ≈ `frames_per_clip / working_fps` (X-CLIP: **8 / 8 = 1.0 s**; prefer
+  ≥2 s in practice). Shorter clips get padded and degrade similarity for the
+  wrong reason.
+- **Ceiling** = shortest real instance you care about. Median reference duration
+  becomes `W_base`. Long takes are motion-trimmed (`max_reference_sec: 4.0`).
+- `W_base` is the median across **every** reference of **every** class, and it
+  sets both the window lengths and `min_duration`. One 4 s reference among 2 s
+  ones shifts the minimum detectable duration for all classes.
 
-- **Floor** = `frames_per_clip / working_fps` = 16 / 8 = **2.0 s**. Everything is
-  resampled to a fixed frame count before encoding, so clips below that are
-  padded with repeated frames while every target chunk is not. Similarity then
-  degrades for reasons unrelated to the action. `build_prototypes.py` warns.
-- **Ceiling** = the shortest real occurrence. The median reference duration
-  becomes `W_base`, which sets window length, and a window longer than the action
-  mixes in background (spec §7.1).
+Class names in `config.yaml` must match directory names
+(`ear_cover`, `hair_twirling`, `head_nodding`).
 
-So: 2–4 s, trimmed to the action itself.
-
-## Run order
+## CLI run order
 
 ```bash
 python scripts/build_prototypes.py --config config.yaml
 python scripts/calibrate.py        --config config.yaml --labels data/labels/
 python scripts/detect.py           --config config.yaml --video data/videos/x.mp4 --out dets.json
-python scripts/detect_live.py      --config config.yaml
+python scripts/detect_live.py      --config config.yaml   # server OpenCV camera
+python scripts/detect_live.py --list-cameras              # pick live.camera_index
 ```
 
-Prototypes first (nothing scores without them), then calibration (nothing
-detects without a `tau_high`), then detection. `detect.py` encodes into the
-cache automatically when it is missing. `detect_live.py` refuses to run
-uncalibrated: live detection can only consume a threshold, never produce one,
-because the sweep needs cached offline features over a labeled eval set.
+Prototypes first, then calibration (`tau_high`), then detection.
+
+**The two entry points differ on an uncalibrated threshold, deliberately.**
+`detect_live.py` calls `require_tau_high` and refuses to run without one. The
+web demo runs anyway on an in-memory 1.5σ preset, so the record → detect loop
+works before any labeling has happened — and labels every surface with
+`UNCALIBRATED` while it does. The preset is never written to disk; only
+`calibrate.py` writes `cache/calibration.json`.
 
 ## Where detections go
 
-Both `detect.py` and `detect_live.py` append to `data/events/events.csv`
-unconditionally — there is no flag to turn it off.
+Both offline and live append to `data/events/events.csv`.
 
-- **Offline** writes one `closed` row per detection.
-- **Live** writes an `open` row when a detection starts and a second `closed`
-  row, sharing the `event_id`, when it ends. Read the log with
-  `event_log.read_events()`, which groups by `event_id` and takes the last row.
-- An event whose final row is still `open` means the run ended — cleanly or by
-  crash — with that detection running. `event_log.unclosed_events()` finds them.
-  They have a real start and no end; do not read `end_sec` as zero.
-- `start_utc`/`end_utc` are **empty** unless the wall-clock origin is known.
-  Live always knows it. A recorded file does not, so pass `--source-start-utc`
-  or set `infer_video_start_from_mtime`. Nothing fabricates a datetime.
+- **Offline:** one `closed` row per detection.
+- **Live:** `open` row at start, second `closed` row with the same `event_id` at
+  end. Use `event_log.read_events()` to resolve the latest row per id.
+- **Clips** (when `clips.enabled: true`): `data/clips/<source_id>/<event_id>.mp4`,
+  path stored in `clip_path`. Retention deletes oldest-first past `max_total_gb`.
+  Log rows are append-only — a `clip_path` can outlive its file. That is the
+  documented trade (§9.6, pitfall §14.15), and it is the state of this tree
+  today: 32 `closed` rows, **zero** clip files. Do not read a `clip_path` as a
+  promise the file exists; `/api/events` already skips rows whose clip is gone.
 
-### Saved clips
+One event in the log has an `open` row and no `closed` row. Per §9.2 that means
+the run ended while the detection was still running — `_live_loop` is a daemon
+thread, and a daemon thread killed at interpreter exit never reaches its flush.
+`max_open_sec` cannot help there: force-close happens inside
+`HysteresisTracker.step()`, which needs a *subsequent* chunk that never comes.
+The count is surfaced in the UI header and in `/api/state`, because a reader
+that only counts `closed` rows silently loses these.
 
-`clips.enabled: true` in the shipped config writes an mp4 per detected event to
-`data/clips/<source_id>/<event_id>.mp4`, and the path goes into the log's
-`clip_path` column. Offline clips come from the source file at native fps and
-resolution; live clips come from the retention buffer at `working_fps`, so they
-are choppier — those are the only frames that path ever kept.
+Live timestamps come from **capture time**, not a chunk counter, so under load
+timestamps stay honest while chunk spacing may stretch.
 
-**This is the only thing in the system that writes video of the monitored person
-to disk.** Everything else works on embeddings and timestamps. Set
-`clips.enabled: false` for timestamps-only operation, which retains no video
-anywhere, in memory or on disk. It defaults to false when the config block is
-missing entirely, so a missing key can never silently turn recording on.
+## Config snapshot (shipped)
 
-Retention deletes oldest-first past `max_total_gb` (5 GB), and clips longer than
-`max_clip_sec` (60 s) are truncated. Log rows are append-only and never
-rewritten, so **a `clip_path` can outlive its file** — check it exists before
-opening. Live clip capture also means holding a rolling ~10 s window of
-JPEG-compressed frames in RAM continuously, before any detection exists, because
-otherwise the seconds before a detection are already gone by the time it fires.
-
-### Timestamps under load
-
-Live chunks are timestamped from **when their frames were actually captured**,
-not from a chunk counter. On hardware that cannot encode as fast as the camera
-delivers — which includes this MacBook — a counter would report every event as
-having happened progressively earlier than it did. What degrades under load
-instead is chunk *spacing*: chunks come to span uneven, longer stretches than
-`chunk_sec`, and window pooling assumes uniform spacing, so scoring is distorted
-while timestamps stay honest. `detect_live.py` warns the first time a chunk takes
-longer to encode than it covers, and prints the mean encode time and real-time
-factor when the session ends.
-
-## You have no data yet
-
-`data/references/`, `data/videos/` and `data/labels/` are empty, so nothing real
-can be run end to end. `tests/fixtures.py` and `tests/stub_encoder.py` stand in:
-synthetic clips of a moving square, and a numpy-only encoder exposing the same
-`encode_clips` surface as the real one. `tests/test_pipeline.py` drives the real
-prototype, scoring, grouping, and event-log code over them — only the encoder is
-swapped.
-
-To get to a real run you need, at minimum: one reference clip per class in
-`data/references/<class>/`, and for Phase 4 a labeled eval set — the spec asks
-for ≥20 instances across ≥30 minutes including plenty of background.
-`calibrate.py` warns when you are under that but will still run; a threshold
-calibrated on less is not trustworthy.
-
-## The shipped config is tuned for 8 GB Apple Silicon
-
-`working_fps: 8`, `chunk_sec: 2.0`, `frames_per_clip: 16`.
-
-The spec's defaults (`chunk_sec: 1.0`, the model's native 64 frames) do not fit
-here. ViT-L at 64 frames × 256px is ~8,200 tokens per clip; the weights alone are
-1.2 GB in fp32 and the attention activations on top will OOM or swap against 8 GB
-of unified memory. At 16 frames it is ~2,000 tokens — roughly 4× fewer, with
-attention ~16× cheaper.
-
-The chosen numbers multiply out exactly: 8 fps × 2.0 s = **16 frames per chunk**,
-so `fit_clip_length()` resamples nothing and the encoder sees real frames rather
-than repeats.
-
-**The cost:** 16 frames is off-distribution for a model trained at 64, so
-absolute similarity quality will be worse than the paper's. On a CUDA box with
-real VRAM, set `frames_per_clip: 64` with `chunk_sec: 8.0` (or `working_fps: 32`)
-and re-run `calibrate.py`. The cache keys on all three values, so changing them
-invalidates cleanly rather than silently reusing stale features.
-
-## Deviations from the spec
-
-Four, all additive:
-
-- **`src/config.py`** — not in the §3 layout. All five scripts read one config;
-  something had to load it.
-- **`frames_per_clip` in the feature cache** — the §4 contract does not list it,
-  but changing it changes every vector while `model_id`, `working_fps` and
-  `chunk_sec` all stay put. That is exactly the silent-stale-cache failure
-  pitfall §14.6 warns about, so it is stored and keyed on.
-- **`__w_base_sec__` in the prototype bank** — `W_base` comes from the median
-  reference duration, which is known at build time and needed at scoring time.
-  Class names starting with `__` are rejected so it cannot collide.
-- **`cache/calibration.json`** — `calibrate.py` writes the threshold here and
-  `load_config` reads it when `tau_high` is null, so the value comes from the
-  sweep without a yaml round-trip destroying every comment in `config.yaml`.
-  `--write-config` also patches the single `tau_high:` line in place.
+| Key | Value | Why |
+| :--- | :--- | :--- |
+| `backbone` | `xclip` | Held-out winner vs V-JEPA / SigLIP |
+| `working_fps` / `chunk_sec` / `frames_per_clip` | 8 / 2.0 / 8 | Matches X-CLIP training length |
+| `pose.enabled` / `hands.enabled` | false | Fusion hurt held-out mAP |
+| `clips.pre_roll_sec` | 1.0 | Lead-in on saved clips |
+| `live.background_warmup_chunks` | 15 | Avoid early noise opens |
+| `live.open_margin` | 0.35 | Near-tie suppression (σ ranking) |
+| `classes.hair_twirling.confirm_sec` | 3.0 | Sustained open gate — **hand-set** |
+| `classes.ear_cover.require_wrist_near_ear` | true | Chin-rest FP cut |
+| `overlay.enabled` | true | Skeleton on the preview; rendering only |
+| `overlay.max_age_ms` | 1200 | Must exceed a 900 ms encode stall |
 
 ## Layout
 
 ```
-config.yaml              # every script reads this one file
+config.yaml              # single source of truth for scripts + webapp
+conftest.py / pytest.ini # repo root on sys.path; pins pytest rootdir
 src/
-  config.py              # loading, derived values (W_base, window lengths)
-  encoder.py             # V-JEPA 2 wrapper; THE single encoding path
-  chunker.py             # video -> non-overlapping chunks, 4 decoder backends
-  features.py            # chunk encoding + on-disk cache
-  prototypes.py          # reference clips -> augmented prototype bank
-  scoring.py             # pooling, top-k similarity, hysteresis, NMS
-  evaluate.py            # event-level metrics, threshold sweep
-  live.py                # camera capture + online grouping
-  event_log.py           # durable CSV log (stdlib only, by design)
-  clip_writer.py         # per-event clip extraction, retention buffer, budget
-scripts/                 # the five CLI entry points
-tests/                   # fixtures.py + stub_encoder.py + four test modules
+  config.py              # load + derived values (W_base, windows, calibration_status)
+  encoder.py             # THE single encoding path (refs / offline / live)
+  chunker.py             # video → chunks (decord / PyAV / torchvision / OpenCV)
+  features.py            # encode + on-disk cache
+  prototypes.py          # reference clips → prototype bank
+  scoring.py             # pool, top-k, hysteresis (+ confirm_sec), NMS
+  evaluate.py            # event metrics, threshold sweep
+  live.py                # CameraStream + LiveDetector
+  pose.py / hands.py     # optional streams + ear wrist gate
+  event_log.py           # CSV audit trail
+  clip_writer.py         # H.264 clips, retention buffer, size budget
+webapp/
+  server.py              # FastAPI demo (browser webcam ingest)
+  ui/                 # React (Vite) source — DESIGN.md + Apple HIG tool UI
+  static/             # Built assets (npm run build); FastAPI serves this
+scripts/                 # CLI entry points
+tests/                   # stub encoder + pipeline / web / clip tests
 ```
 
-One structural note: the encoder is reached through `Encoder.encode_clips()` and
-nowhere else, by references, offline chunks, and live chunks alike. The spec
-names a divergence between those paths as the most common silent failure in the
-system (§14.1, §14.9), so there is exactly one function that resamples,
-preprocesses, pools and normalizes, and no way around it.
+The encoder is only reached through `Encoder.encode_clips()`. Divergent
+reference / offline / live encode paths are the classic silent failure mode in
+the spec (§14.1, §14.9) — there is one resample / preprocess / pool / L2 path.
+
+## Deviations from the spec
+
+- **`src/config.py`** — shared loader for all entry points.
+- **`frames_per_clip` in the feature cache** — keyed so length changes cannot
+  silently reuse stale vectors (§14.6). The prototype bank is keyed on the crop
+  setting for the same reason.
+- **`__w_base_sec__` in the prototype bank** — build-time median duration for
+  scoring; `__`-prefixed names are reserved.
+- **`cache/calibration.json`** — `calibrate.py` writes τ here; `load_config`
+  reads it when `tau_high` is null without rewriting `config.yaml`, and carries
+  the sidecar's own `source` string through so a preset cannot present itself
+  as a measurement.
+- **`webapp/`** — not in the §3 layout; wraps the same live detector for demos.
+- **`confirm_sec`** — per-class open hold; additive to hysteresis (§7.3.2).

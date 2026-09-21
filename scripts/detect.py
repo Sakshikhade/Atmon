@@ -20,7 +20,8 @@ from src.clip_writer import (  # noqa: E402
     describe_store,
     extract_clips_from_video,
 )
-from src.config import load_config, require_tau_high  # noqa: E402
+from src.config import calibration_status, load_config, require_tau_high  # noqa: E402
+from src.face_id import face_match_per_chunk, identity_enabled  # noqa: E402
 from src.event_log import (  # noqa: E402
     SOURCE_VIDEO,
     EventLogWriter,
@@ -31,12 +32,15 @@ from src.event_log import (  # noqa: E402
 from src.pipeline import describe_fusion, grid_for_video  # noqa: E402
 from src.prototypes import load_bank  # noqa: E402
 from src.scoring import background_score_stats, group_detections  # noqa: E402
+from src.subjects import bind_subject  # noqa: E402
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--video", required=True)
+    parser.add_argument("--subject-id", default=None,
+                        help="active subject (required when identity.enabled)")
     parser.add_argument("--out", default=None, help="detections JSON (default: <video_id>.dets.json)")
     parser.add_argument(
         "--source-start-utc",
@@ -50,15 +54,35 @@ def main():
     args = parser.parse_args()
 
     bank_cfg = load_config(args.config)
+    if identity_enabled(bank_cfg) and not args.subject_id:
+        raise SystemExit(
+            "identity.enabled requires --subject-id so offline FP behavior "
+            "matches live (Active Subject face gate)"
+        )
+    if args.subject_id:
+        bind_subject(bank_cfg, args.subject_id)
     bank, w_base_sec = load_bank(bank_cfg)
     cfg = load_config(args.config, w_base_sec=w_base_sec)
+    if args.subject_id:
+        bind_subject(cfg, args.subject_id)
     tau_high = require_tau_high(cfg)
 
     video_id = video_id_for(args.video)
     video_id, bundle, class_names, grid, parts = grid_for_video(
         cfg, bank, args.video, force=args.force
     )
-    detections = group_detections(class_names, grid, bundle["starts"], cfg, tau_high, bundle["chunk_sec"])
+    face_series = None
+    if identity_enabled(cfg):
+        face_series = face_match_per_chunk(
+            cfg, args.video, args.subject_id, bundle["starts"], bundle["chunk_sec"]
+        )
+        print("face gate : %d/%d chunks matched subject %s"
+              % (int(face_series.sum()), len(face_series), args.subject_id))
+    detections = group_detections(
+        class_names, grid, bundle["starts"], cfg, tau_high, bundle["chunk_sec"],
+        pose_sequences=parts.get("_pose_sequences"),
+        face_match_per_chunk=face_series,
+    )
 
     # Wall-clock origin: explicit flag, else opt-in mtime, else unknown (spec 9.3).
     start_utc = parse_iso(args.source_start_utc) if args.source_start_utc else None
@@ -94,6 +118,7 @@ def main():
         tau_high=tau_high,
         source_start_utc=start_utc,
         flush_each_event=bool(cfg["event_log"]["flush_each_event"]),
+        subject_id=args.subject_id,
     ) as writer:
         for det in detections:
             # Offline grouping knows both boundaries, so every row is closed.
@@ -122,7 +147,13 @@ def main():
         json.dump(payload, fh, indent=2)
 
     print("video     : %s (%d chunks)" % (video_id, len(bundle["starts"])))
-    print("tau_high  : %.4f (from %s)" % (tau_high, cfg.get("_tau_high_source", "?")))
+    status = calibration_status(cfg)
+    banner = "%.4f (from %s)" % (tau_high, status["source"] or "?")
+    if status["state"] != "calibrated":
+        banner += "  [%s]" % status["state"].upper()
+    print("tau_high  : %s" % banner)
+    if status["detail"]:
+        print("            %s" % status["detail"])
     print("W_base    : %.2fs -> %d chunks, windows %s" % (
         cfg["w_base_sec"], cfg.w_base_chunks, cfg.window_lengths_chunks()))
     print("detections: %d -> %s" % (len(detections), out_path))

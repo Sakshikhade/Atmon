@@ -296,6 +296,21 @@ class HysteresisTracker:
         self._pending_start = None
         self._pending_peak = None
 
+    def confirm_pending(self, end_sec):
+        """Would an above-tau score at end_sec still be waiting on confirm_sec?
+
+        A caller that acts on an IMMINENT open has to ask: live's mutual
+        exclusion closes whatever else is running the moment a higher-scoring
+        class clears tau, one step before that class is stepped. Without this,
+        a single-chunk spike on a class with confirm_sec truncates a real
+        detection of another class and then never opens anything itself.
+        """
+        if self.is_open or self.confirm_sec <= 0.0:
+            return False
+        if self._pending_start is None:
+            return True                      # the streak starts at this step
+        return (float(end_sec) - self._pending_start) < self.confirm_sec
+
     def step(self, start_sec, end_sec, score, allow_open=True):
         """Advance one time position.
 
@@ -417,14 +432,40 @@ def class_tau(cfg, class_name, tau_high):
     return th, tl
 
 
-def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None):
+def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
+                     pose_sequences=None, face_match_per_chunk=None):
     """Score grid -> detections. The offline path (spec 7.3, all six steps).
 
     Live mode runs steps 1-3 only; see live.py and spec 10.2 for why NMS and
     cross-class resolution cannot run online.
+
+    pose_sequences: optional [N, T, K, 3] already normalize_pose'd (from
+    encode_video_pose). When present, classes with require_wrist_near_ear must
+    clear wrist_near_ear on that chunk before opening -- same rule as live.
+
+    face_match_per_chunk: optional length-N bool array; when identity.enabled,
+    opens require True on that chunk (Active Subject face gate).
     """
     chunk_sec = float(chunk_sec if chunk_sec is not None else cfg["chunk_sec"])
     min_duration = float(cfg["min_duration_ratio"]) * float(cfg["w_base_sec"])
+
+    from src.face_id import identity_enabled
+    from src.pose import classes_needing_wrist_gate, wrist_near_ear
+
+    gated = set(classes_needing_wrist_gate(cfg))
+    gate_thresholds = {
+        name: float(cfg.class_cfg(name).get("wrist_near_ear_threshold", 0.28))
+        for name in gated
+    }
+    sequences = None
+    if pose_sequences is not None:
+        sequences = np.asarray(pose_sequences)
+    warned_missing = False
+    face_series = None
+    if face_match_per_chunk is not None:
+        face_series = np.asarray(face_match_per_chunk, dtype=bool)
+    identity_on = identity_enabled(cfg)
+    warned_face = False
 
     detections = []
     for ci, name in enumerate(class_names):
@@ -434,7 +475,29 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None):
         tracker = HysteresisTracker(name, th, tl, confirm_sec=confirm)
         for t, score in enumerate(series):
             start_sec = float(starts[t])
-            _, closed = tracker.step(start_sec, start_sec + chunk_sec, score)
+            allow_open = True
+            if name in gate_thresholds:
+                if sequences is None or t >= len(sequences):
+                    if not warned_missing:
+                        print("  wrist gate configured for %s but no pose sequences; "
+                              "offline opens are unguarded" % ", ".join(sorted(gated)))
+                        warned_missing = True
+                    allow_open = True
+                else:
+                    allow_open = bool(
+                        wrist_near_ear(sequences[t], threshold=gate_thresholds[name])
+                    )
+            if allow_open and identity_on:
+                if face_series is None or t >= len(face_series):
+                    if not warned_face:
+                        print("  identity.enabled but no face_match_per_chunk; "
+                              "offline opens are blocked")
+                        warned_face = True
+                    allow_open = False
+                else:
+                    allow_open = bool(face_series[t])
+            _, closed = tracker.step(
+                start_sec, start_sec + chunk_sec, score, allow_open=allow_open)
             if closed:
                 detections.append(closed)
         final = tracker.flush(float(starts[-1]) + chunk_sec)

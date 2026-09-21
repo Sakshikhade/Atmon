@@ -32,6 +32,7 @@ COLUMNS = [
     "tau_high",
     "written_utc",
     "clip_path",
+    "subject_id",
 ]
 
 STATUS_OPEN = "open"
@@ -110,6 +111,7 @@ class EventLogWriter:
         tau_high,
         source_start_utc=None,
         flush_each_event=True,
+        subject_id=None,
     ):
         if source_type not in (SOURCE_VIDEO, SOURCE_LIVE):
             raise ValueError("source_type must be %r or %r" % (SOURCE_VIDEO, SOURCE_LIVE))
@@ -124,6 +126,7 @@ class EventLogWriter:
         self.tau_high = tau_high
         self.source_start_utc = source_start_utc
         self.flush_each_event = flush_each_event
+        self.subject_id = subject_id or ""
 
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
@@ -175,6 +178,7 @@ class EventLogWriter:
             "tau_high": "" if self.tau_high is None else "%.6f" % float(self.tau_high),
             "written_utc": iso(utc_now()),
             "clip_path": clip_path or "",
+            "subject_id": self.subject_id,
         }
 
     def _append(self, row):
@@ -267,6 +271,7 @@ def read_events(path):
                 # A path here records where the clip WAS written; retention may
                 # since have deleted it, so check the file before opening it.
                 "clip_path": raw.get("clip_path") or None,
+                "subject_id": raw.get("subject_id") or None,
             }
     return [final[e] for e in order]
 

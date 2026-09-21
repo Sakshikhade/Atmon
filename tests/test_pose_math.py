@@ -4,13 +4,9 @@ Pure numpy: normalization, DTW, similarity, and score-level fusion. MediaPipe
 extraction itself is not covered -- it needs the model file and real frames.
 """
 
-import os
-import sys
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.pose import (  # noqa: E402
     L_SHOULDER,
@@ -24,7 +20,6 @@ from src.pose import (  # noqa: E402
 from src.scoring import aggregate_per_chunk, fuse_scores  # noqa: E402
 
 K = len(UPPER_BODY)
-
 
 def skeleton(hand_offset, center=(0.5, 0.5), scale=0.2):
     """One frame: shoulders at +/- scale, a 'hand' landmark at an offset.
@@ -41,16 +36,13 @@ def skeleton(hand_offset, center=(0.5, 0.5), scale=0.2):
     frame[15] = (cx + hand_offset[0] * scale, cy + hand_offset[1] * scale, 0.0)
     return frame
 
-
 def sequence(offsets, center=(0.5, 0.5), scale=0.2):
     return np.stack([skeleton(o, center, scale) for o in offsets])
-
 
 def test_normalization_is_translation_invariant():
     a = normalize_pose(sequence([(0.5, -1.0)], center=(0.3, 0.3)))
     b = normalize_pose(sequence([(0.5, -1.0)], center=(0.8, 0.7)))
     assert np.allclose(a, b, atol=1e-5, equal_nan=True), "same gesture, different position"
-
 
 def test_normalization_is_scale_invariant():
     """A close-up and a medium shot of the same gesture must normalize alike.
@@ -62,7 +54,6 @@ def test_normalization_is_scale_invariant():
     far = normalize_pose(sequence([(0.5, -1.0)], scale=0.12))
     assert np.allclose(near, far, atol=1e-5, equal_nan=True)
 
-
 def test_normalization_skips_frames_without_shoulders():
     seq = sequence([(0.5, -1.0), (0.5, -1.0)])
     seq[1, L_SHOULDER] = np.nan
@@ -70,17 +61,14 @@ def test_normalization_skips_frames_without_shoulders():
     assert not np.isnan(out[0]).all()
     assert np.isnan(out[1]).all(), "a frame with no shoulders cannot be normalized"
 
-
 def test_dtw_is_zero_for_identical_sequences():
     seq = normalize_pose(sequence([(0.2, -0.5), (0.5, -1.0), (0.2, -0.5)]))
     assert dtw_distance(seq, seq) == pytest.approx(0.0, abs=1e-6)
-
 
 def test_dtw_separates_different_gestures():
     hand_up = normalize_pose(sequence([(0.5, -1.0)] * 4))       # hand by the head
     hand_down = normalize_pose(sequence([(0.5, 1.5)] * 4))      # hand by the hip
     assert dtw_distance(hand_up, hand_up) < dtw_distance(hand_up, hand_down)
-
 
 def test_dtw_tolerates_timing_differences():
     """The same gesture performed slower must still match closely."""
@@ -89,12 +77,10 @@ def test_dtw_tolerates_timing_differences():
     different = normalize_pose(sequence([(0.5, 1.5)] * 6))
     assert dtw_distance(fast, slow) < dtw_distance(fast, different)
 
-
 def test_dtw_returns_inf_without_a_usable_pose():
     good = normalize_pose(sequence([(0.5, -1.0)]))
     empty = np.full((3, K, 3), np.nan, dtype=np.float32)
     assert not np.isfinite(dtw_distance(good, empty))
-
 
 def test_similarity_is_bounded_and_ordered():
     template = normalize_pose(sequence([(0.5, -1.0)] * 4))
@@ -105,21 +91,17 @@ def test_similarity_is_bounded_and_ordered():
     assert 0.0 < s_same <= 1.0 and 0.0 <= s_other <= 1.0
     assert s_same > s_other
 
-
 def test_similarity_takes_the_best_template():
     a = normalize_pose(sequence([(0.5, -1.0)] * 3))
     b = normalize_pose(sequence([(-0.5, -1.0)] * 3))
     query = normalize_pose(sequence([(-0.5, -1.0)] * 3))
     assert similarity(query, [a, b]) == pytest.approx(similarity(query, [b]))
 
-
 def test_similarity_of_no_pose_is_zero():
     template = normalize_pose(sequence([(0.5, -1.0)]))
     assert similarity(np.full((3, K, 3), np.nan, dtype=np.float32), [template]) == 0.0
 
-
 # -- window aggregation and fusion ----------------------------------------
-
 
 class FakeCfg(dict):
     def __init__(self, alphas=None, **kw):
@@ -137,7 +119,6 @@ class FakeCfg(dict):
     def class_cfg(self, name):
         return self._alphas.get(name, {})
 
-
 def test_aggregate_spreads_a_peak_over_its_window():
     cfg = FakeCfg()
     series = np.zeros(12, dtype=np.float32)
@@ -147,11 +128,9 @@ def test_aggregate_spreads_a_peak_over_its_window():
     assert out[4] > 0 or out[8] > 0, "windows covering it lift neighbours too"
     assert out[0] == 0.0, "far-away chunks are untouched"
 
-
 def test_aggregate_preserves_length():
     cfg = FakeCfg()
     assert len(aggregate_per_chunk(np.zeros(7, np.float32), cfg)) == 7
-
 
 def test_explicit_weights_override_alpha():
     """Three-stream weights are normalized and honoured per class."""
@@ -162,7 +141,6 @@ def test_explicit_weights_override_alpha():
     assert w["pose"] == pytest.approx(0.5)
     assert sum(w.values()) == pytest.approx(1.0)
 
-
 def test_alpha_splits_remaining_weight_across_other_streams():
     """alpha_vjepa keeps meaning its two-way split when a third stream exists."""
     from src.scoring import stream_weights
@@ -172,7 +150,6 @@ def test_alpha_splits_remaining_weight_across_other_streams():
     assert w["vjepa"] == pytest.approx(0.4)
     assert w["pose"] == pytest.approx(0.3) and w["hands"] == pytest.approx(0.3)
 
-
 def test_fusion_follows_the_hand_stream_when_weighted_to_it():
     cfg = FakeCfg(alphas={"a": {"weights": {"vjepa": 0.0, "pose": 0.0, "hands": 1.0}}})
     rng = np.random.default_rng(7)
@@ -181,7 +158,6 @@ def test_fusion_follows_the_hand_stream_when_weighted_to_it():
     grids["hands"][0, 20:25] += 0.3
     fused = fuse_scores(["a"], grids, cfg)
     assert fused[0, 22] > 3.0
-
 
 def test_fusion_respects_alpha():
     cfg = FakeCfg(alphas={"a": {"alpha_vjepa": 0.0}, "b": {"alpha_vjepa": 1.0}})
@@ -196,14 +172,12 @@ def test_fusion_respects_alpha():
     assert fused[0, 32] > 3.0, "alpha 0.0 must follow the pose stream"
     assert fused[1, 32] > 3.0, "alpha 1.0 must follow the embedding stream"
 
-
 def test_fusion_without_pose_still_normalizes():
     cfg = FakeCfg()
     rng = np.random.default_rng(3)
     vjepa = rng.normal(0.9, 0.004, (1, 100)).astype(np.float32)
     out = fuse_scores(["a"], {"vjepa": vjepa}, cfg)
     assert abs(float(np.median(out[0]))) < 0.5, "should be centred on background"
-
 
 def test_fusion_half_and_half_uses_both():
     cfg = FakeCfg(alphas={"a": {"alpha_vjepa": 0.5}})
@@ -218,7 +192,6 @@ def test_fusion_half_and_half_uses_both():
     assert fused[0, 31] > 0
     assert fused[0, 31] < only_pose[0, 31] + 1e-3
 
-
 def test_hysteresis_can_be_blocked_from_opening():
     """allow_open=False is how live does cross-class resolution online."""
     from src.scoring import HysteresisTracker
@@ -229,7 +202,6 @@ def test_hysteresis_can_be_blocked_from_opening():
 
     opened, _ = tracker.step(1.0, 2.0, 0.95, allow_open=True)
     assert opened is not None and tracker.is_open, "and must still open once allowed"
-
 
 def test_wrist_near_ear_detects_hand_at_head():
     # Already shoulder-normalized: shoulders at +/-0.5, left wrist by left ear.

@@ -120,6 +120,33 @@ def load_config(path="config.yaml", w_base_sec=None):
     raw["pose"].setdefault("min_confidence", 0.5)
     raw["pose"].setdefault("temperature", 0.35)
 
+    # Skeleton overlay on the live preview. RENDERING ONLY -- a separate block
+    # from pose: on purpose, so `overlay.enabled: true` can never be read as
+    # turning the measured-harmful DTW pose stream back on.
+    #
+    # Defaults OFF here and true in the shipped config.yaml, the same split
+    # clips uses: a config without the block behaves exactly as before, which
+    # matters for the CLI, the offline path, and every existing test fixture.
+    # Face identity gate (EdgeFace). Defaults OFF when the block is absent so
+    # CLI / tests without a subject gallery keep working. Shipped config.yaml
+    # turns it on for the multi-user demo.
+    raw.setdefault("identity", {})
+    raw["identity"].setdefault("enabled", False)
+    raw["identity"].setdefault("model_path", "models/edgeface_xs_gamma_06.pt")
+    raw["identity"].setdefault("match_threshold", 0.40)
+    raw["identity"].setdefault("harvest_frames_per_clip", 8)
+    raw["identity"].setdefault("live_stride", 2)
+    raw["identity"].setdefault("min_detection_confidence", 0.5)
+
+    raw.setdefault("overlay", {})
+    raw["overlay"].setdefault("enabled", False)
+    raw["overlay"].setdefault("min_visibility", 0.5)
+    # Must exceed one encode stall -- measured max gap 900 ms across an X-CLIP
+    # encode, against a 126 ms median. See config.yaml's overlay: comment.
+    raw["overlay"].setdefault("max_age_ms", 1200)
+    raw["overlay"].setdefault("mirror", True)
+    raw["overlay"].setdefault("stride", 1)
+
     # Clip saving defaults OFF when the block is absent: writing video of the
     # monitored person is opt-in, never something a missing config key turns on.
     raw["clips"].setdefault("enabled", False)
@@ -137,7 +164,6 @@ def load_config(path="config.yaml", w_base_sec=None):
 
     raw["live"].setdefault("camera_index", 0)
     raw["live"].setdefault("capture_fps", 30)
-    raw["live"].setdefault("drop_on_backpressure", True)
     raw["live"].setdefault("camera_warmup_sec", 5.0)
     raw["live"].setdefault("cross_class_resolution", True)
     raw["live"].setdefault("cross_class_on_raw", True)
@@ -159,14 +185,40 @@ def load_config(path="config.yaml", w_base_sec=None):
     raw["_config_path"] = path
 
     # tau_high: yaml value wins; else the calibration sidecar; else None.
-    if raw.get("tau_high") is None:
-        sidecar = os.path.join(root, CALIBRATION_PATH)
-        if os.path.exists(sidecar):
+    #
+    # The sidecar's own "source" field is carried through, not discarded. It
+    # used to be dropped here in favour of the bare filename, so a demo preset
+    # surfaced in the UI as "tau 1.500 - cache/calibration.json" -- which reads
+    # as file-backed and measured. The file was honest; the screen was not.
+    payload = None
+    sidecar = os.path.join(root, CALIBRATION_PATH)
+    if os.path.exists(sidecar):
+        try:
             with open(sidecar, "r", encoding="utf-8") as fh:
-                raw["tau_high"] = json.load(fh).get("tau_high")
-            raw["_tau_high_source"] = CALIBRATION_PATH
+                payload = json.load(fh)
+        except (OSError, ValueError):
+            payload = None                    # unreadable sidecar == no sidecar
+        if not isinstance(payload, dict):
+            payload = None
+
+    if raw.get("tau_high") is None:
+        if payload is not None:
+            raw["tau_high"] = payload.get("tau_high")
+            raw["_tau_high_source"] = payload.get("source") or CALIBRATION_PATH
+            raw["_calibration_sidecar"] = payload
     else:
         raw["_tau_high_source"] = "config.yaml"
+        # calibrate.py --write-config patches the yaml AND writes the sidecar,
+        # so a yaml tau_high is usually the same number the sweep produced.
+        # Keep the sidecar's verdict when the two agree: without it,
+        # --write-config would quietly upgrade a sweep that missed the data
+        # gates or the false-alarm budget from PROVISIONAL to "calibrated".
+        try:
+            same = abs(float(payload["tau_high"]) - float(raw["tau_high"])) < 1e-9
+        except (KeyError, TypeError, ValueError):
+            same = False
+        if same:
+            raw["_calibration_sidecar"] = payload
 
     chunk_sec = float(raw["chunk_sec"])
     if w_base_sec is None:
@@ -177,6 +229,44 @@ def load_config(path="config.yaml", w_base_sec=None):
         raw["w_base_chunks"] = max(1, int(round(float(w_base_sec) / chunk_sec)))
 
     return Config(raw)
+
+
+#: Sidecars whose "source" contains any of these were never swept.
+_UNCALIBRATED_MARKERS = ("demo-preset", "uncalibrated", "provisional")
+
+
+def calibration_status(cfg):
+    """Where tau_high came from, and whether it was actually measured.
+
+    One resolver for every surface (the CLI banners, /api/state, the UI pill),
+    so none of them can independently decide a demo preset looks calibrated.
+
+    state is "calibrated" ONLY for a threshold written by scripts/calibrate.py
+    from a labeled sweep. Anything else -- a preset, a provisional short-of-gates
+    run, or nothing at all -- is not, and says so.
+    """
+    tau = cfg.get("tau_high")
+    source = cfg.get("_tau_high_source")
+    sidecar = cfg.get("_calibration_sidecar") or {}
+
+    if tau is None:
+        return {"state": "uncalibrated", "tau_high": None, "source": None,
+                "detail": "No threshold. Run scripts/calibrate.py (spec 8)."}
+
+    marker = str(source or "").lower()
+    if any(m in marker for m in _UNCALIBRATED_MARKERS):
+        return {"state": "uncalibrated", "tau_high": float(tau), "source": source,
+                "detail": "Fixed preset, not measured performance. "
+                          "Run scripts/calibrate.py against a labeled eval set."}
+
+    # An explicit gate/budget failure recorded by calibrate.py downgrades it.
+    if sidecar.get("within_gates") is False or sidecar.get("within_budget") is False:
+        return {"state": "provisional", "tau_high": float(tau), "source": source,
+                "detail": "Swept, but short of the spec 8.1 data gates or the "
+                          "false-alarm budget. Treat the numbers as wide."}
+
+    return {"state": "calibrated", "tau_high": float(tau), "source": source,
+            "detail": None}
 
 
 def require_tau_high(cfg):

@@ -15,7 +15,12 @@ Given one short trimmed reference clip per action class (2–5 classes total), f
 **Two input sources, one detection path.** Recorded video files (offline batch) and a live camera feed (streaming) are both v1 scope. They share the same encoder, prototypes, scoring, and grouping code; they differ only in how frames arrive and when an event's end time becomes known. Every detection from either source is persisted to the event log (§9), and — when clip saving is enabled — a video clip of the event is written alongside it (§9.6).
 
 ### Non-goals (do not implement)
-- Person detection, tracking, or re-identification. Assume one subject, or accept whatever is in frame.
+- Person *tracking* or concurrent multi-person attribution. **Exception:** an
+  Active-Subject face gate (EdgeFace) may enroll one user at a time and refuse
+  opens when the camera face does not match that subject’s gallery. See
+  `identity:` in config.yaml and README.
+- Assume one *active* subject per Live session (or accept whatever is in frame
+  when `identity.enabled: false`).
 - Audio. Video only.
 - Any fine-tuning, LoRA, or gradient updates.
 - **Alerting or notification of any kind** — no webhooks, no SMS, no push, no sound. Detections are written to the event log and nothing else. Do not wire this pipeline to the `AlertGateway` in the parent AAMAS repository, now or later.

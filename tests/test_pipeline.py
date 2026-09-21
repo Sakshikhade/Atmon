@@ -13,13 +13,10 @@ Covers the spec's own acceptance tests:
 
 import collections
 import os
-import sys
 import tempfile
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.config import load_config  # noqa: E402
 from src.event_log import (  # noqa: E402
@@ -68,7 +65,6 @@ classes:
     allow_flip: true
 """
 
-
 @pytest.fixture()
 def workspace():
     with tempfile.TemporaryDirectory() as d:
@@ -76,16 +72,13 @@ def workspace():
             fh.write(CONFIG_YAML)
         yield d
 
-
 @pytest.fixture()
 def cfg(workspace):
     return load_config(os.path.join(workspace, "config.yaml"), w_base_sec=REFERENCE_SEC)
 
-
 @pytest.fixture()
 def encoder():
     return StubEncoder(frames_per_clip=16)
-
 
 @pytest.fixture()
 def bank(cfg, encoder):
@@ -95,7 +88,6 @@ def bank(cfg, encoder):
         reference, cfg.class_cfg("wiggle"), cfg["prototypes"], np.random.default_rng(0)
     )
     return {"wiggle": encoder.encode_clips([v for _, v in variants])}
-
 
 @pytest.fixture()
 def live_timeline():
@@ -112,7 +104,6 @@ def live_timeline():
     )
     return frames, events
 
-
 @pytest.fixture()
 def timeline():
     """Background, then a 6s action, then background. Action at 6.0s -> 12.0s."""
@@ -123,9 +114,7 @@ def timeline():
     )
     return frames, events
 
-
 # -- the stub itself must be discriminative enough to test with --------------
-
 
 def test_stub_separates_motion_kinds(encoder):
     """If this fails the fixtures are broken, not the pipeline."""
@@ -137,7 +126,6 @@ def test_stub_separates_motion_kinds(encoder):
     assert float(osc @ osc2) > float(osc @ static)
     assert float(osc @ osc2) > float(osc @ drift)
 
-
 def test_clips_at_or_above_the_resample_boundary_embed_alike(encoder):
     """Above frames_per_clip/working_fps, duration stops mattering much.
 
@@ -148,7 +136,6 @@ def test_clips_at_or_above_the_resample_boundary_embed_alike(encoder):
     at = encoder.encode_clips([synthetic_clip("oscillate", boundary_frames, fps=FPS, freq=2.0, seed=1)])[0]
     above = encoder.encode_clips([synthetic_clip("oscillate", boundary_frames * 2, fps=FPS, freq=2.0, seed=1)])[0]
     assert float(at @ above) > 0.9
-
 
 def test_below_the_resample_boundary_is_a_different_regime(encoder):
     """Frame-repeated clips embed differently, and that is worth knowing.
@@ -163,18 +150,14 @@ def test_below_the_resample_boundary_is_a_different_regime(encoder):
     at = encoder.encode_clips([synthetic_clip("oscillate", boundary_frames, fps=FPS, freq=2.0, seed=1)])[0]
     assert float(below @ at) < 0.9, "if this ever passes, the boundary effect is gone -- update the docs"
 
-
 # -- Phase 2 acceptance (spec 6) -------------------------------------------
-
 
 def test_reference_scores_near_one_against_its_own_bank(bank):
     """Divergent encoding paths show up here first (spec 6, pitfall 14.1)."""
     assert self_similarity(bank, "wiggle") > 0.9
 
-
 def test_variants_are_kept_separately_not_averaged(bank):
     assert len(bank["wiggle"]) >= 10, "spec 4: store all variants, never a class mean"
-
 
 def test_flip_is_gated_per_class(cfg):
     clip = synthetic_clip("oscillate", 16, fps=FPS, seed=5)
@@ -184,9 +167,7 @@ def test_flip_is_gated_per_class(cfg):
     assert any(name.startswith("flip") for name, _ in with_flip)
     assert not any(name.startswith("flip") for name, _ in without)
 
-
 # -- Phase 3 acceptance (spec 7) -------------------------------------------
-
 
 def test_detects_known_instance_with_tiou_at_least_half(cfg, encoder, bank, timeline):
     frames, events = timeline
@@ -202,7 +183,6 @@ def test_detects_known_instance_with_tiou_at_least_half(cfg, encoder, bank, time
     best = max(tiou((d["start"], d["end"]), truth) for d in detections)
     assert best >= 0.5, "spec 7 acceptance: detection must cover the instance at tIoU >= 0.5"
 
-
 def test_action_scores_above_background(cfg, encoder, bank, timeline):
     frames, _ = timeline
     feats, starts = encode_timeline(encoder, frames, fps=FPS, chunk_sec=CHUNK_SEC)
@@ -215,7 +195,6 @@ def test_action_scores_above_background(cfg, encoder, bank, timeline):
         "the pitfall 14.8 signal to move to Phase 5"
     )
 
-
 def test_pure_background_produces_no_detections(cfg, encoder, bank):
     frames, _ = synthetic_timeline([("static", 18.0, None)], fps=FPS, seed=3)
     feats, starts = encode_timeline(encoder, frames, fps=FPS, chunk_sec=CHUNK_SEC)
@@ -224,9 +203,7 @@ def test_pure_background_produces_no_detections(cfg, encoder, bank):
     detections = group_detections(class_names, grid, starts, cfg, tau_high=0.95)
     assert detections == []
 
-
 # -- 9: the offline path writes the log ------------------------------------
-
 
 def test_offline_run_logs_closed_rows_only(cfg, encoder, bank, timeline, workspace):
     frames, _ = timeline
@@ -256,9 +233,7 @@ def test_offline_run_logs_closed_rows_only(cfg, encoder, bank, timeline, workspa
     assert all(e["end_sec"] is not None for e in logged)
     assert all(e["start_utc"] is None for e in logged), "no origin given -> no fabricated datetime"
 
-
 # -- 10: the live path ------------------------------------------------------
-
 
 def test_live_path_writes_open_then_closed(cfg, encoder, bank, live_timeline, workspace):
     """Drive LiveDetector directly, no camera -- same code the camera feeds."""
@@ -302,7 +277,6 @@ def test_live_path_writes_open_then_closed(cfg, encoder, bank, live_timeline, wo
 
     truth = (events[0]["start"], events[0]["end"])
     assert max(tiou((e["start_sec"], e["end_sec"]), truth) for e in closed) >= 0.5
-
 
 def test_live_compensates_the_causal_smoothing_delay(cfg, encoder, bank, live_timeline, workspace):
     """The compensation must actually shift timestamps earlier by the delay.
@@ -351,7 +325,6 @@ def test_live_compensates_the_causal_smoothing_delay(cfg, encoder, bank, live_ti
         "compensation should move the start exactly one chunk earlier, got %.1fs" % shift
     )
 
-
 def test_live_reports_its_lag(cfg, encoder, bank, workspace):
     writer = EventLogWriter(
         path=os.path.join(workspace, "lag.csv"),
@@ -368,7 +341,6 @@ def test_live_reports_its_lag(cfg, encoder, bank, workspace):
     writer.close()
     # W_base/2 + smoothing * stride = 1.0 + 3 * 1.0
     assert detector.lag_sec == pytest.approx(4.0)
-
 
 def test_live_and_offline_agree_on_a_clean_signal(cfg, encoder, bank, live_timeline, workspace):
     """Same features, same threshold -- the two paths must not disagree wildly.

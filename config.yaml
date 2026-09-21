@@ -81,6 +81,45 @@ pose:
   min_confidence: 0.5
   temperature: 0.35                 # sim = exp(-DTW / temperature)
 
+# Skeleton overlay on the live preview. RENDERING ONLY.
+#
+# This does NOT enable the DTW pose stream above. pose.enabled stays false
+# (fusion measured harmful held out on eval3); with the overlay on,
+# LiveDetector.active_streams is still ["vjepa"] and every score is identical.
+# tests/test_overlay_stream_isolation.py runs the live loop with the overlay off
+# and on and diffs the emitted event rows to keep that true.
+#
+# It loads the same MediaPipe landmarker the ear_cover wrist gate already loads
+# (src/live.py load_live_pose_extractor), and costs the SAME number of detect()
+# calls per second -- one per frame at working_fps, instead of 16 per 2s chunk.
+# Measured on an M3 with a real subject in frame: 20.9 ms/frame mean, p95 21.4,
+# against a 125 ms budget (1000 / working_fps). Hence stride 1.
+overlay:
+  enabled: true
+  min_visibility: 0.5               # drop joints the model is unsure about; it
+                                    # extrapolates occluded ones far off-frame
+  max_age_ms: 1200                  # blank the skeleton with no landmarks this
+                                    # recent. MUST exceed one encode stall (the
+                                    # loop blocks during encode_clips) or the
+                                    # overlay strobes once per chunk. Measured
+                                    # over a 12s session: 7.2 Hz sustained,
+                                    # median gap 126 ms, but max 900 ms across
+                                    # an encode. 700 blinked; 1200 has margin.
+  mirror: true                      # preview is CSS-mirrored (selfie view)
+  stride: 1                         # run pose every Nth frame; raise if CPU-bound
+
+# Face identity gate (EdgeFace-XS-GAMMA). Active-Subject: Live only opens when
+# the camera face matches the selected subject's gallery, harvested from that
+# subject's action reference clips. CC BY-NC-SA 4.0 -- non-commercial.
+# Demo match_threshold is UNCALIBRATED.
+identity:
+  enabled: true
+  model_path: models/edgeface_xs_gamma_06.pt
+  match_threshold: 0.40
+  harvest_frames_per_clip: 8
+  live_stride: 2                    # FR every N frames (~4 Hz at working_fps 8)
+  min_detection_confidence: 0.5
+
 # Pose-derived cropping. OFF: measured a no-op on every video tested (the
 # subject fills the frame, so boxes come back full-frame), and it forces pose
 # extraction on every run for nothing. Would matter for a wide room shot where
@@ -124,7 +163,11 @@ live:
   camera_index: 0
   camera_warmup_sec: 5.0            # a camera can report open before it is ready
   capture_fps: 30                   # device rate; frames are resampled to working_fps
-  drop_on_backpressure: true        # drop frames rather than block the encoder; log the rate
+  # Frames are always dropped rather than queued -- CameraStream keeps only the
+  # latest. Backpressure is the normal state (the encoder cannot keep up with a
+  # 30 fps camera and only needs working_fps), so this was never a choice; the
+  # drop rate is reported instead. The old drop_on_backpressure key was read
+  # nowhere and has been removed.
 
   # Live timing: offline uses longer multi-scale windows + trailing smooth,
   # which keeps a detection open for seconds after the person stops. These
