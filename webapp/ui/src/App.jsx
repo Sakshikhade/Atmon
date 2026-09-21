@@ -59,6 +59,37 @@ export default function App() {
     return () => clearInterval(t);
   }, [refreshState, refreshGallery]);
 
+  // Reconcile UI with server ingest mode (refresh / desync recovery).
+  useEffect(() => {
+    if (!state) return;
+    const ingesting = state.mode === 'recording' || state.mode === 'detecting';
+    if (!ingesting) {
+      if (!liveUi && !recordingUi) return;
+      setLiveUi(false);
+      setRecordingUi(false);
+      camera.stop();
+      overlay.clear();
+      overlay.resetOpen();
+      return;
+    }
+    if (state.mode === 'detecting' && !liveUi) {
+      setLiveUi(true);
+      (async () => {
+        try {
+          await camera.open();
+          await camera.attach(camera.liveVideoRef.current);
+          overlay.syncSize();
+          setLiveStatus({ text: 'Reconnected to live session…', kind: '' });
+        } catch (err) {
+          setLiveStatus({ text: String(err.message || err), kind: 'err' });
+        }
+      })();
+    }
+    if (state.mode === 'recording' && !recordingUi) {
+      setRecordingUi(true);
+    }
+  }, [state, liveUi, recordingUi, camera, overlay]);
+
   useEffect(() => {
     const es = new EventSource('/api/stream');
     es.onmessage = (ev) => {
@@ -173,23 +204,46 @@ export default function App() {
     idle &&
     state?.bank_built &&
     (!state?.identity_enabled || (state?.active_subject_id && state?.face_ready));
+  const liveBlockReason = (() => {
+    if (liveUi) return '';
+    if (!state) return 'Loading…';
+    if (!idle) return `Busy (${state.mode}).`;
+    if (!state.bank_built) return 'Build the prototype bank first (record a reference).';
+    if (state.identity_enabled) {
+      if (!state.active_subject_id) return 'Select an active subject.';
+      if (!state.face_ready) {
+        return 'Face gallery missing for this subject — rebuild the bank (or re-record) so faces can be harvested.';
+      }
+    }
+    return '';
+  })();
 
   const selectedClassName = () =>
     (classSelect === '__new__' ? newClassName : classSelect).trim();
 
   const onLiveStart = async () => {
+    let started = false;
     try {
       setLiveStatus({ text: 'Opening camera…', kind: '' });
       await camera.open();
       await post('/api/live/start?source=browser');
+      started = true;
       setLiveUi(true);
       await camera.attach(camera.liveVideoRef.current);
       overlay.syncSize();
       setLiveStatus({ text: 'Starting…', kind: '' });
     } catch (err) {
+      if (started) {
+        try {
+          await post('/api/live/stop');
+        } catch {
+          /* already idle / stop raced */
+        }
+      }
       camera.stop();
       setLiveUi(false);
       setLiveStatus({ text: String(err.message || err), kind: 'err' });
+      refreshState().catch(() => {});
     }
   };
 
@@ -197,11 +251,13 @@ export default function App() {
     try {
       await post('/api/live/stop');
     } catch (err) {
+      // Still tear down UI even if server already left detecting.
       setLiveStatus({ text: String(err.message || err), kind: 'err' });
     }
     setLiveUi(false);
     camera.stop();
     overlay.clear();
+    refreshState().catch(() => {});
   };
 
   const onRecordStart = async () => {
@@ -432,18 +488,24 @@ export default function App() {
                 disabled={!liveOk || liveUi}
                 onClick={onLiveStart}
                 title={
-                  calState === 'calibrated'
+                  liveBlockReason ||
+                  (calState === 'calibrated'
                     ? undefined
-                    : 'Fixed preset, not measured performance. Run scripts/calibrate.py against a labeled eval set.'
+                    : 'Fixed preset, not measured performance. Run scripts/calibrate.py against a labeled eval set.')
                 }
               >
                 {calState === 'calibrated' ? 'Start' : 'Start demo'}
               </button>
-              <button className="danger" type="button" disabled={!liveUi} onClick={onLiveStop}>
+              <button className="danger" type="button" disabled={!liveUi && state?.mode !== 'detecting'} onClick={onLiveStop}>
                 Stop
               </button>
             </div>
           </div>
+          {!liveOk && liveBlockReason ? (
+            <p className="hint uncal" role="status">
+              {liveBlockReason}
+            </p>
+          ) : null}
           <div className="panel-body">
             <div className="stage-grid">
               <div className="stage-camera">

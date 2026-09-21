@@ -96,18 +96,20 @@ def save_gallery(cfg, subject_id, embeddings, sources=None):
     return path
 
 
-def _crop_face_bgr_or_rgb(frame_rgb, detection, pad=0.25):
-    """Square crop around a MediaPipe relative bounding box -> uint8 RGB."""
+FACE_DETECTOR_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_detector/"
+    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+)
+
+
+def _crop_face_from_pixel_box(frame_rgb, origin_x, origin_y, box_w, box_h, pad=0.25):
+    """Square crop around a pixel bounding box -> uint8 RGB 112×112."""
     import cv2
 
     h, w = frame_rgb.shape[:2]
-    bbox = detection.location_data.relative_bounding_box
-    x0 = bbox.xmin * w
-    y0 = bbox.ymin * h
-    bw = bbox.width * w
-    bh = bbox.height * h
-    cx, cy = x0 + bw / 2.0, y0 + bh / 2.0
-    side = max(bw, bh) * (1.0 + 2.0 * pad)
+    cx = float(origin_x) + float(box_w) / 2.0
+    cy = float(origin_y) + float(box_h) / 2.0
+    side = max(float(box_w), float(box_h)) * (1.0 + 2.0 * pad)
     x1 = int(max(0, cx - side / 2.0))
     y1 = int(max(0, cy - side / 2.0))
     x2 = int(min(w, cx + side / 2.0))
@@ -118,10 +120,30 @@ def _crop_face_bgr_or_rgb(frame_rgb, detection, pad=0.25):
     return cv2.resize(crop, (112, 112), interpolation=cv2.INTER_LINEAR)
 
 
-class FaceIdEncoder:
-    """EdgeFace embedder + MediaPipe Face Detection for 112×112 crops.
+def _ensure_face_detector_model(path):
+    """Download BlazeFace short-range if missing (same pattern as pose .task)."""
+    if os.path.isfile(path):
+        return path
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    try:
+        from urllib.request import urlretrieve
 
-    Pass ``model=`` / ``detector=`` in tests to inject fakes.
+        urlretrieve(FACE_DETECTOR_URL, path)
+    except Exception as exc:  # noqa: BLE001
+        raise FileNotFoundError(
+            "face detector model not found at %s and download failed (%s). "
+            "Get blaze_face_short_range.tflite from MediaPipe face_detector."
+            % (path, exc)
+        ) from exc
+    return path
+
+
+class FaceIdEncoder:
+    """EdgeFace embedder + MediaPipe Tasks FaceDetector for 112×112 crops.
+
+    Pass ``model=`` / ``detector=`` in tests to inject fakes. Injected detectors
+    must expose ``.detect(mp.Image)`` returning an object with ``.detections``
+    (Tasks API), matching mediapipe 0.10+ (no ``mp.solutions``).
     """
 
     def __init__(self, cfg, model=None, detector=None, device=None):
@@ -133,7 +155,8 @@ class FaceIdEncoder:
         self._model = model
         self._detector = detector
         self._device = device
-        self._mp_ctx = None
+        self._mp = None
+        self._owns_detector = detector is None
 
     def _ensure_model(self):
         if self._model is not None:
@@ -162,35 +185,67 @@ class FaceIdEncoder:
         self._model.eval()
         return self._model
 
+    def _detector_model_path(self):
+        path = (
+            self.cfg.get("identity", {}).get("detector_model_path")
+            or "models/blaze_face_short_range.tflite"
+        )
+        if not os.path.isabs(path):
+            path = self.cfg.path(path)
+        return _ensure_face_detector_model(path)
+
     def _ensure_detector(self):
         if self._detector is not None:
             return self._detector
         import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
 
-        self._mp_ctx = mp.solutions.face_detection.FaceDetection(
-            model_selection=0, min_detection_confidence=self.min_conf
+        model_path = self._detector_model_path()
+        options = vision.FaceDetectorOptions(
+            base_options=python.BaseOptions(
+                model_asset_path=model_path,
+                delegate=python.BaseOptions.Delegate.CPU,
+            ),
+            running_mode=vision.RunningMode.IMAGE,
+            min_detection_confidence=self.min_conf,
         )
-        self._detector = self._mp_ctx
+        self._detector = vision.FaceDetector.create_from_options(options)
+        self._mp = mp
+        self._owns_detector = True
         return self._detector
 
     def close(self):
-        if self._mp_ctx is not None:
-            self._mp_ctx.close()
-            self._mp_ctx = None
-            self._detector = None
+        if self._owns_detector and self._detector is not None:
+            close = getattr(self._detector, "close", None)
+            if callable(close):
+                close()
+        self._detector = None
+        self._mp = None
 
     def detect_crop(self, frame_rgb):
         """Largest face crop as uint8 RGB [112,112,3], or None."""
+        import mediapipe as mp
+
         det = self._ensure_detector()
-        result = det.process(frame_rgb)
+        image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=np.ascontiguousarray(frame_rgb),
+        )
+        result = det.detect(image)
         if not result.detections:
             return None
-        # Highest score first
-        best = max(
-            result.detections,
-            key=lambda d: float(d.score[0]) if d.score else 0.0,
+
+        def _score(d):
+            if not d.categories:
+                return 0.0
+            return float(d.categories[0].score or 0.0)
+
+        best = max(result.detections, key=_score)
+        box = best.bounding_box
+        return _crop_face_from_pixel_box(
+            frame_rgb, box.origin_x, box.origin_y, box.width, box.height
         )
-        return _crop_face_bgr_or_rgb(frame_rgb, best)
 
     def embed_crop(self, crop_rgb):
         """L2-normalized 512-D embedding from a 112×112 RGB crop."""

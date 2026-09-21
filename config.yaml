@@ -115,6 +115,7 @@ overlay:
 identity:
   enabled: true
   model_path: models/edgeface_xs_gamma_06.pt
+  detector_model_path: models/blaze_face_short_range.tflite  # MediaPipe Tasks FaceDetector
   match_threshold: 0.40
   harvest_frames_per_clip: 8
   live_stride: 2                    # FR every N frames (~4 Hz at working_fps 8)

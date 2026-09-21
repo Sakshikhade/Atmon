@@ -136,6 +136,32 @@ class AppState:
 STATE = AppState()
 app = FastAPI(title="Few-shot action detector -- demo")
 
+
+@app.on_event("startup")
+def restore_active_subject():
+    """Pick a subject on boot so Start demo is not stuck until a manual select.
+
+    Prefer a subject that already has a face gallery when identity is on.
+    """
+    try:
+        c = cfg()
+        subjects = list_subjects(c)
+        if not subjects:
+            return
+        preferred = None
+        if identity_enabled(c):
+            preferred = next(
+                (s for s in subjects if has_face_gallery(c, s["id"])),
+                None,
+            )
+        chosen = preferred or subjects[0]
+        with STATE.lock:
+            if STATE.active_subject_id is None:
+                STATE.active_subject_id = chosen["id"]
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # Optional shared secret. Unset (the default) the app is loopback-only and
 # unauthenticated, exactly as before. Set, every mutating request must carry it.
 APP_TOKEN = os.environ.get("APP_TOKEN", "").strip()
@@ -259,9 +285,16 @@ class BrowserFrameStream:
 
     def start(self):
         self._started_at = time.time()
+        # Watchdog starts on first read() so a slow encoder/bank load before the
+        # capture loop does not burn the warmup budget.
+        return self
+
+    def _ensure_watchdog(self):
+        if self._watchdog is not None:
+            return
+        self._started_at = time.time()
         self._watchdog = threading.Thread(target=self._watch, name="browser-cam", daemon=True)
         self._watchdog.start()
-        return self
 
     def _watch(self):
         while not self.stopped:
@@ -296,6 +329,7 @@ class BrowserFrameStream:
         return True
 
     def read(self):
+        self._ensure_watchdog()
         with self.lock:
             frame = self.latest
             self.latest = None
@@ -721,6 +755,19 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
     stream = None
     face_encoder = None
     subject_id = STATE.active_subject_id
+    source = (source or "browser").strip().lower()
+
+    # Bind browser ingest BEFORE the slow encoder/bank load. Otherwise the
+    # page starts POSTing /api/frame immediately, gets 409 (no ingest yet),
+    # and may give up — leaving mode="detecting" with no camera frames.
+    if source == "browser":
+        try:
+            stream = _open_stream(source, camera_index, live_cfg=c.get("live"))
+        except RuntimeError as exc:
+            STATE.publish("live_error", {"message": str(exc)})
+            with STATE.lock:
+                STATE.mode = "idle"
+            return
 
     try:
         if subject_id:
@@ -745,6 +792,9 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
         # (there is no `finally` here) -- every future record/live start then
         # 409s "busy" until the server is restarted.
         STATE.publish("live_error", {"message": str(exc)})
+        if stream is not None:
+            stream.release()
+            _clear_ingest(stream)
         with STATE.lock:
             STATE.mode = "idle"
         return
@@ -784,7 +834,8 @@ def _live_loop(c, camera_index, max_seconds, source="browser"):
     if camera_index is None:
         camera_index = live_cfg["camera_index"]
     try:
-        stream = _open_stream(source, camera_index, live_cfg=live_cfg)
+        if stream is None:
+            stream = _open_stream(source, camera_index, live_cfg=live_cfg)
     except RuntimeError as exc:
         STATE.publish("live_error", {"message": str(exc)})
         writer.close()
@@ -1108,9 +1159,20 @@ def api_live_start(
 @app.post("/api/live/stop")
 def api_live_stop():
     with STATE.lock:
-        if STATE.mode != "detecting":
-            raise HTTPException(409, "not currently running a live test")
-    STATE.live_stop.set()
+        mode = STATE.mode
+        thread = STATE.live_thread
+        stop_evt = STATE.live_stop
+    if mode != "detecting":
+        # Idempotent: UI may call stop after a refresh when already idle.
+        return {"ok": True, "mode": mode}
+    stop_evt.set()
+    # If the worker already died without clearing mode, force idle so Start
+    # is not stuck behind a ghost "detecting" session.
+    if thread is not None and not thread.is_alive():
+        _clear_ingest()
+        with STATE.lock:
+            STATE.mode = "idle"
+        STATE.publish("live_stopped", {"session_id": STATE.live_session_id})
     return {"ok": True}
 
 
