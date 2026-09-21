@@ -89,7 +89,7 @@ export default function App() {
           break;
         case 'build_done':
           setRecordStatus({
-            text: `Ready — ${(msg.classes || []).join(', ')}`,
+            text: `Ready - ${(msg.classes || []).join(', ')}`,
             kind: 'ok',
           });
           setNewClassName('');
@@ -105,7 +105,7 @@ export default function App() {
           break;
         case 'live_started':
           setLiveStatus({
-            text: `Session ${msg.session_id} — watching ${msg.classes.join(', ')}`,
+            text: `Session ${msg.session_id} - watching ${msg.classes.join(', ')}`,
             kind: '',
           });
           if (msg.warmup_sec) {
@@ -114,8 +114,8 @@ export default function App() {
           if (msg.overlay) overlay.applyConfig(msg.overlay);
           break;
         case 'live_warmed_up':
-          setLiveStatus({ text: 'Ready — detections can open.', kind: 'ok' });
-          pushFeed('Background warm — detections can open');
+          setLiveStatus({ text: 'Ready - detections can open.', kind: 'ok' });
+          pushFeed('Background warm - detections can open');
           break;
         case 'live_open':
           overlay.bumpOpen(1);
@@ -242,7 +242,7 @@ export default function App() {
       } else if (data.warning) {
         setRecordStatus({ text: data.warning, kind: 'err' });
       } else {
-        setRecordStatus({ text: 'Saved — building bank…', kind: '' });
+        setRecordStatus({ text: 'Saved - building bank…', kind: '' });
       }
     } catch (err) {
       setRecordStatus({ text: String(err.message || err), kind: 'err' });
@@ -271,7 +271,7 @@ export default function App() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || res.statusText);
       }
-      setRecordStatus({ text: 'Uploaded — building bank…', kind: '' });
+      setRecordStatus({ text: 'Uploaded - building bank…', kind: '' });
     } catch (err) {
       setRecordStatus({ text: String(err.message || err), kind: 'err' });
     }
@@ -301,33 +301,28 @@ export default function App() {
   })();
 
   return (
-    <>
+    <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand">Action Detector</div>
           <div className="meta">
-            <span className="mode-pill">
+            <span className="meta-chip mode-pill">
               <span className={modeDotClass(state?.mode)} aria-hidden="true" />
               Mode <b>{state?.mode || '…'}</b>
             </span>
-            <span>
-              Subject <b>{state?.active_subject?.display_name || '—'}</b>
+            <span className="meta-chip">
+              Subject <b>{state?.active_subject?.display_name || '-'}</b>
             </span>
-            <span>
-              Backbone <b>{state?.backbone || '—'}</b>
+            <span className="meta-chip">
+              Backbone <b>{state?.backbone || '-'}</b>
             </span>
-            <span>
-              τ{' '}
-              <b className={calState === 'calibrated' ? '' : 'uncal'} title={state?.calibration_detail || ''}>
-                {tauLabel}
-              </b>
+            <span className="meta-chip" title={state?.calibration_detail || 'Detection threshold'}>
+              Threshold{' '}
+              <b className={calState === 'calibrated' ? '' : 'uncal'}>{tauLabel}</b>
             </span>
             {(state?.unclosed_events || 0) > 0 && (
-              <span>
-                Unclosed{' '}
-                <b className="uncal" title="Events whose last row is open (spec 9.2)">
-                  {state.unclosed_events}
-                </b>
+              <span className="meta-chip" title="Events whose last row is open">
+                Unclosed <b className="uncal">{state.unclosed_events}</b>
               </span>
             )}
           </div>
@@ -335,13 +330,13 @@ export default function App() {
       </header>
 
       <main>
-        <section className="panel" aria-labelledby="subjects-title" style={{ marginBottom: '0.75rem' }}>
+        <section className="panel subjects" aria-labelledby="subjects-title">
           <div className="panel-head">
-            <div>
+            <div className="panel-intro">
               <h2 id="subjects-title">Subjects</h2>
               <p className="hint">
                 {state?.identity_enabled
-                  ? 'Identity gate on — Live only opens when the camera matches this subject’s face.'
+                  ? 'Identity gate on. Live only opens when the camera matches this subject’s face.'
                   : 'Select whose face gates Live. References and face gallery are per subject.'}
               </p>
             </div>
@@ -411,13 +406,13 @@ export default function App() {
 
         <section className="panel stage" aria-labelledby="live-title">
           <div className="panel-head">
-            <div>
+            <div className="panel-intro">
               <h2 id="live-title">Live</h2>
               <p className={`hint${calState === 'calibrated' ? '' : ' uncal'}`}>
                 {calState === 'calibrated'
                   ? 'Detect using this device’s webcam. Needs an active subject with a face gallery and bank.'
                   : state?.calibration_detail ||
-                    'No calibrated threshold — detections are not measured performance.'}
+                    'No calibrated threshold. Detections are not measured performance.'}
               </p>
             </div>
             <div className="head-actions">
@@ -425,6 +420,7 @@ export default function App() {
                 className="ghost"
                 type="button"
                 aria-pressed={overlay.skeletonOn ? 'true' : 'false'}
+                aria-label={overlay.skeletonOn ? 'Hide pose skeleton' : 'Show pose skeleton'}
                 style={{ opacity: overlay.skeletonOn ? undefined : 0.55 }}
                 onClick={overlay.toggleSkeleton}
               >
@@ -435,8 +431,13 @@ export default function App() {
                 type="button"
                 disabled={!liveOk || liveUi}
                 onClick={onLiveStart}
+                title={
+                  calState === 'calibrated'
+                    ? undefined
+                    : 'Fixed preset, not measured performance. Run scripts/calibrate.py against a labeled eval set.'
+                }
               >
-                {calState === 'calibrated' ? 'Start' : 'Start (uncalibrated demo)'}
+                {calState === 'calibrated' ? 'Start' : 'Start demo'}
               </button>
               <button className="danger" type="button" disabled={!liveUi} onClick={onLiveStop}>
                 Stop
@@ -464,23 +465,31 @@ export default function App() {
               <div className="stage-side">
                 <p className="subhead">Event feed</p>
                 <div className="feed" aria-live="polite">
-                  {feed.map((row) => (
-                    <div
-                      key={row.id}
-                      className={
-                        row.kind === 'open' ? 'ev-open' : row.kind === 'close' ? 'ev-close' : undefined
-                      }
-                    >
-                      {row.className ? (
-                        <>
-                          <span className="ev-class">{row.className}</span>
-                          {` · ${row.text}`}
-                        </>
-                      ) : (
-                        row.text
-                      )}
-                    </div>
-                  ))}
+                  {feed.length === 0 ? (
+                    <div className="feed-empty">Waiting for detections…</div>
+                  ) : (
+                    feed.map((row) => (
+                      <div
+                        key={row.id}
+                        className={
+                          row.kind === 'open'
+                            ? 'ev-open'
+                            : row.kind === 'close'
+                              ? 'ev-close'
+                              : undefined
+                        }
+                      >
+                        {row.className ? (
+                          <>
+                            <span className="ev-class">{row.className}</span>
+                            {` · ${row.text}`}
+                          </>
+                        ) : (
+                          row.text
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
@@ -490,9 +499,9 @@ export default function App() {
         <div className="support-grid">
           <section className="panel" aria-labelledby="refs-title">
             <div className="panel-head">
-              <div>
+              <div className="panel-intro">
                 <h2 id="refs-title">References</h2>
-                <p className="hint">Teach a class with a clean 2–4 s clip.</p>
+                <p className="hint">Teach a class with a clean 2-4 s clip.</p>
               </div>
               <div className="head-actions">
                 <button
@@ -517,7 +526,7 @@ export default function App() {
               <p className="subhead">Classes</p>
               <div className="classes">
                 {!state?.classes?.length ? (
-                  <p className="empty">No classes yet — record or upload below.</p>
+                  <p className="empty">No classes yet - record or upload below.</p>
                 ) : (
                   state.classes.map((c) => (
                     <div className="row" key={c.name}>
@@ -538,8 +547,12 @@ export default function App() {
               <div className="divider" role="presentation" />
 
               <p className="subhead">Add reference</p>
-              <div className="controls" style={{ marginBottom: '0.65rem' }}>
+              <div className="controls" style={{ marginBottom: '0.7rem' }}>
+                <label className="sr-only" htmlFor="classSelect">
+                  Use case
+                </label>
                 <select
+                  id="classSelect"
                   aria-label="Use case"
                   value={classSelect}
                   onChange={(e) => setClassSelect(e.target.value)}
@@ -553,16 +566,23 @@ export default function App() {
                   <option value="__new__">New use case…</option>
                 </select>
                 {classSelect === '__new__' && (
-                  <input
-                    type="text"
-                    placeholder="new_name"
-                    autoComplete="off"
-                    value={newClassName}
-                    onChange={(e) => setNewClassName(e.target.value)}
-                  />
+                  <>
+                    <label className="sr-only" htmlFor="classNameInput">
+                      New use case name
+                    </label>
+                    <input
+                      id="classNameInput"
+                      type="text"
+                      placeholder="new_name"
+                      autoComplete="off"
+                      value={newClassName}
+                      onChange={(e) => setNewClassName(e.target.value)}
+                      aria-label="New use case name"
+                    />
+                  </>
                 )}
               </div>
-              <div className="controls" style={{ marginBottom: '0.65rem' }}>
+              <div className="controls" style={{ marginBottom: '0.7rem' }}>
                 <button
                   className="primary"
                   type="button"
@@ -575,11 +595,7 @@ export default function App() {
                 >
                   Record
                 </button>
-                <button
-                  type="button"
-                  disabled={!recordingUi}
-                  onClick={() => onRecordStop(true)}
-                >
+                <button type="button" disabled={!recordingUi} onClick={() => onRecordStop(true)}>
                   Stop &amp; save
                 </button>
                 <button
@@ -621,7 +637,7 @@ export default function App() {
 
           <section className="panel" aria-labelledby="gallery-title">
             <div className="panel-head">
-              <div>
+              <div className="panel-intro">
                 <h2 id="gallery-title">Captures</h2>
                 <p className="hint">Clips saved from live detections.</p>
               </div>
@@ -653,7 +669,7 @@ export default function App() {
             <div className="panel-body">
               <div id="gallery">
                 {!galleryGroups ? null : galleryGroups.length === 0 ? (
-                  <p className="empty">No captures yet — run Live above.</p>
+                  <p className="empty">No captures yet - run Live above.</p>
                 ) : (
                   galleryGroups.map((g) => (
                     <div className="gallery-class" key={g.name}>
@@ -704,6 +720,6 @@ export default function App() {
           </section>
         </div>
       </main>
-    </>
+    </div>
   );
 }
