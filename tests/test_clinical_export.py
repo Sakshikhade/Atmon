@@ -1,12 +1,4 @@
-import re
-
-from src.clinical_export import NON_DIAGNOSTIC, export_lines, pdf_bytes
-
-
-def _shown(payload: bytes) -> str:
-    parts = re.findall(r"\((?:\\.|[^)\\])*\)", payload.decode("latin-1"))
-    text = "".join(part[1:-1] for part in parts)
-    return text.replace("\\(", "(").replace("\\)", ")").replace("\\\\", "\\")
+from src.clinical_export import NON_DIAGNOSTIC, export_lines, pdf_bytes, pdf_text
 
 
 def test_export_keeps_the_statement_and_leaves_out_video():
@@ -31,7 +23,7 @@ def test_export_keeps_the_statement_and_leaves_out_video():
         ],
     )
     payload = pdf_bytes(lines)
-    text = _shown(payload)
+    text = pdf_text(payload)
     assert NON_DIAGNOSTIC in text
     assert "This export contains no video and no audio." in text
     assert "Hand flapping" in text

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 
@@ -135,13 +136,19 @@ def pdf_bytes(lines: list[str]) -> bytes:
     return bytes(out)
 
 
+def pdf_text(payload: bytes) -> str:
+    parts = re.findall(r"\((?:\\.|[^)\\])*\)", payload.decode("latin-1"))
+    text = "".join(part[1:-1] for part in parts)
+    return text.replace("\\(", "(").replace("\\)", ")").replace("\\\\", "\\")
+
+
 def create_export(grant_id: str, clinician_id: str) -> tuple[str, bytes]:
     if not _uuid(grant_id):
         raise MediaError("Unknown grant")
     child, removed, sessions, household_id, session_ids = _load_grant(grant_id, clinician_id)
     lines = export_lines(child, removed, sessions)
     payload = pdf_bytes(lines)
-    if NON_DIAGNOSTIC.encode("latin-1") not in payload:
+    if NON_DIAGNOSTIC not in pdf_text(payload):
         raise MediaError("The export was refused because the statement was missing")
     export_id = str(uuid.uuid4())
     key = f"exports/{household_id}/{export_id}.pdf"
