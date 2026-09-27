@@ -28,6 +28,7 @@ export type FamilySession = {
   obscured: boolean
   antecedentNote: string | null
   childAware: "yes" | "not_really" | null
+  preRollMs: number
   events: FamilyEvent[]
 }
 

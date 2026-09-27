@@ -55,7 +55,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       supabase
         .from("sessions")
         .select(
-          "id, child_id, household_id, started_at, duration_ms, setting, channels, obscured, antecedent_note, child_aware",
+          "id, child_id, household_id, started_at, duration_ms, pre_roll_ms, setting, channels, obscured, antecedent_note, child_aware",
         )
         .eq("household_id", mine.household_id)
         .order("started_at", { ascending: false }),
@@ -138,6 +138,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
     obscured: row.obscured,
     antecedentNote: row.antecedent_note,
     childAware: row.child_aware,
+    preRollMs: row.pre_roll_ms ?? 0,
     events: (eventsBySession.get(row.id) ?? []).sort((a, b) => a.onsetMs - b.onsetMs),
   }))
 
@@ -385,4 +386,127 @@ export async function saveRetention(
 export async function declineAsk(id: string): Promise<string | null> {
   const { error } = await supabase.from("capture_requests").update({ status: "declined" }).eq("id", id)
   return error?.message ?? null
+}
+
+export type CaptureSegment = {
+  seq: number
+  startMs: number
+  durationMs: number
+  sha256: string | null
+}
+
+export type CaptureEvent = {
+  id: string
+  classKey: ClassKey
+  onsetMs: number
+  durationMs: number
+  confidence: "confident" | "needs_a_look"
+  channels: Channels
+}
+
+export type CapturePayload = {
+  sessionId: string
+  childId: string
+  householdId: string
+  startedAt: string
+  durationMs: number
+  preRollMs: number
+  channels: Channels
+  obscured: boolean
+  events: CaptureEvent[]
+  segments: CaptureSegment[]
+}
+
+const OUTBOX_KEY = "atmon-capture-outbox"
+
+function alreadyThere(error: { code?: string; message: string } | null): boolean {
+  if (!error) return false
+  return error.code === "23505" || /duplicate key/i.test(error.message)
+}
+
+export async function saveCapture(input: CapturePayload): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser()
+  const userId = userData.user?.id
+  if (!userId) return "Sign in again to save this session."
+
+  const session = await supabase.from("sessions").insert({
+    id: input.sessionId,
+    child_id: input.childId,
+    household_id: input.householdId,
+    recorded_by: userId,
+    started_at: input.startedAt,
+    duration_ms: input.durationMs,
+    pre_roll_ms: input.preRollMs,
+    channels: input.channels,
+    obscured: input.obscured,
+    storage_location: "device",
+    processing_status: "ready",
+    detector_version: "stub",
+    source: "handheld",
+  })
+  if (session.error && !alreadyThere(session.error)) return session.error.message
+
+  if (input.segments.length > 0) {
+    const segments = await supabase.from("session_segments").insert(
+      input.segments.map((segment) => ({
+        session_id: input.sessionId,
+        seq: segment.seq,
+        start_ms: segment.startMs,
+        duration_ms: segment.durationMs,
+        sha256: segment.sha256,
+        storage_path: `idb:${input.sessionId}`,
+      })),
+    )
+    if (segments.error && !alreadyThere(segments.error)) return segments.error.message
+  }
+
+  if (input.events.length > 0) {
+    const events = await supabase.from("events").insert(
+      input.events.map((event) => ({
+        id: event.id,
+        session_id: input.sessionId,
+        child_id: input.childId,
+        class_key: event.classKey,
+        onset_ms: event.onsetMs,
+        duration_ms: event.durationMs,
+        confidence_band: event.confidence,
+        source: "system",
+        channels: event.channels,
+        status: "detected",
+        detector_version: "stub",
+      })),
+    )
+    if (events.error && !alreadyThere(events.error)) return events.error.message
+  }
+
+  return null
+}
+
+function readOutbox(): CapturePayload[] {
+  const raw = localStorage.getItem(OUTBOX_KEY)
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw) as CapturePayload[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export function queueOutbox(item: CapturePayload) {
+  const items = readOutbox().filter((existing) => existing.sessionId !== item.sessionId)
+  items.push(item)
+  localStorage.setItem(OUTBOX_KEY, JSON.stringify(items))
+}
+
+export async function flushOutbox(): Promise<void> {
+  const items = readOutbox()
+  if (items.length === 0) return
+  const left: CapturePayload[] = []
+  for (const item of items) {
+    const error = await saveCapture(item)
+    if (error) left.push(item)
+  }
+  if (left.length > 0) localStorage.setItem(OUTBOX_KEY, JSON.stringify(left))
+  else localStorage.removeItem(OUTBOX_KEY)
 }

@@ -1,9 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import {
   addNote,
   addSeenEvent,
   createGrant,
   declineAsk,
+  queueOutbox,
+  saveCapture,
   saveConsent,
   saveRetention,
   saveSessionDetails,
@@ -11,6 +13,10 @@ import {
   updateGrant,
   verifyEvent,
 } from "./lib/api"
+import { detectStub } from "./lib/detector"
+import { uuidv7 } from "./lib/ids"
+import { loadVideo, saveVideo, sha256 } from "./lib/mediaStore"
+import { PhoneRecorder } from "./lib/recorder"
 import {
   CLASS_KEYS,
   CLASSES,
@@ -104,6 +110,9 @@ function Timeline({
   return (
     <div className={`tl${dense ? " dense" : ""}${inert ? " inert" : ""}`}>
       <div className="track" />
+      {session.preRollMs > 0 ? (
+        <span className="ante" style={{ ["--mk" as string]: "var(--muted)", left: pct(0), width: pct(session.preRollMs) }} />
+      ) : null}
       {session.events.map((event) => {
         const lead = Math.max(0, event.onsetMs - LEAD_MS)
         const excluded = event.status === "rejected"
@@ -269,6 +278,142 @@ export function Splash({ onDone }: { onDone: () => void }) {
   )
 }
 
+function useCapture(active: boolean) {
+  const engine = useRef<PhoneRecorder | null>(null)
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [readyMs, setReadyMs] = useState(0)
+  const [cameraError, setCameraError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!active) return
+    const recorder = new PhoneRecorder()
+    engine.current = recorder
+    let stop = false
+    void recorder.arm().then((preview) => {
+      if (stop) {
+        recorder.dispose()
+        return
+      }
+      setStream(preview)
+      setCameraError(null)
+    }).catch((err: unknown) => {
+      if (stop) return
+      const name = err instanceof DOMException ? err.name : ""
+      setCameraError(name === "NotAllowedError" ? "Camera is blocked. Allow it to record." : "This browser has no camera.")
+      setStream(null)
+    })
+    const tick = window.setInterval(() => setReadyMs(recorder.bufferedMs()), 500)
+    return () => {
+      stop = true
+      window.clearInterval(tick)
+      recorder.dispose()
+      if (engine.current === recorder) engine.current = null
+      setStream(null)
+    }
+  }, [active])
+
+  return { engine, stream, readyMs, cameraError }
+}
+
+function LivePreview({
+  stream,
+  onSubject,
+}: {
+  stream: MediaStream | null
+  onSubject: (x: number, y: number) => void
+}) {
+  const ref = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.srcObject = stream
+    if (stream) void el.play().catch(() => undefined)
+  }, [stream])
+  return (
+    <video
+      ref={ref}
+      className="scene"
+      autoPlay
+      muted
+      playsInline
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) return
+        onSubject((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height)
+      }}
+    />
+  )
+}
+
+function SessionVideo({
+  sessionId,
+  playAt,
+  playing,
+  speed,
+  onTime,
+  onReady,
+}: {
+  sessionId: string
+  playAt: number
+  playing: boolean
+  speed: number
+  onTime: (ms: number, ended: boolean) => void
+  onReady: (ready: boolean) => void
+}) {
+  const ref = useRef<HTMLVideoElement>(null)
+  const [url, setUrl] = useState<string | null>(null)
+  const [missing, setMissing] = useState(false)
+  const onReadyRef = useRef(onReady)
+  const onTimeRef = useRef(onTime)
+  onReadyRef.current = onReady
+  onTimeRef.current = onTime
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancel = false
+    setMissing(false)
+    setUrl(null)
+    void loadVideo(sessionId).then((blob) => {
+      if (cancel) return
+      if (!blob) {
+        setMissing(true)
+        onReadyRef.current(false)
+        return
+      }
+      objectUrl = URL.createObjectURL(blob)
+      setUrl(objectUrl)
+      onReadyRef.current(true)
+    })
+    return () => {
+      cancel = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !url) return
+    el.playbackRate = speed
+    if (Math.abs(el.currentTime * 1000 - playAt) > 700) el.currentTime = playAt / 1000
+    if (playing) void el.play().catch(() => undefined)
+    else el.pause()
+  }, [url, playing, speed, playAt])
+
+  if (missing || !url) {
+    return <div className="scene-fallback">This session has no video on this phone.</div>
+  }
+  return (
+    <video
+      ref={ref}
+      className="scene"
+      playsInline
+      src={url}
+      onTimeUpdate={(event) => onTimeRef.current(event.currentTarget.currentTime * 1000, false)}
+      onEnded={(event) => onTimeRef.current(event.currentTarget.currentTime * 1000, true)}
+    />
+  )
+}
+
 export function FamilyApp({
   data,
   reload,
@@ -313,6 +458,11 @@ export function FamilyApp({
   const [consents, setConsents] = useState(data.consents)
   const [retention, setRetention] = useState(data.retention)
   const [retentionSaved, setRetentionSaved] = useState(data.retentionSaved)
+  const [freshId, setFreshId] = useState<string | null>(null)
+  const [hasVideo, setHasVideo] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const capturing = screen === "home" || screen === "recording"
+  const capture = useCapture(capturing)
 
   const session = data.sessions.find((item) => item.id === sessionId) ?? data.sessions[0]
   const event = session?.events.find((item) => item.id === eventId)
@@ -334,6 +484,7 @@ export function FamilyApp({
 
   function openSession(id: string) {
     setSessionId(id)
+    setFreshId(null)
     setCheckRun(false)
     go("session", "log")
   }
@@ -356,14 +507,15 @@ export function FamilyApp({
   useEffect(() => {
     if (screen !== "processing") return
     const timerId = window.setTimeout(() => {
-      if (session) openSession(session.id)
+      const next = freshId ?? sessionId
+      if (next) openSession(next)
       else go("home")
     }, 2200)
     return () => window.clearTimeout(timerId)
-  }, [screen])
+  }, [screen, freshId, sessionId])
 
   useEffect(() => {
-    if (!playing || !session) return
+    if (!playing || !session || hasVideo) return
     const tick = window.setInterval(() => {
       setPlayAt((value) => {
         const next = value + 250 * speed
@@ -375,7 +527,7 @@ export function FamilyApp({
       })
     }, 250)
     return () => window.clearInterval(tick)
-  }, [playing, speed, session])
+  }, [playing, speed, session, hasVideo])
 
   async function afterWrite(error: string | null, ok: string) {
     if (error) {
@@ -384,6 +536,77 @@ export function FamilyApp({
     }
     await reload()
     show(ok)
+  }
+
+  function beginRecording() {
+    const recorder = capture.engine.current
+    if (!recorder || capture.cameraError || !capture.stream) {
+      show(capture.cameraError ?? "Camera is still starting.")
+      return
+    }
+    recorder.setObscuring(obscuring)
+    recorder.setAudio(audioOn)
+    recorder.startTake()
+    setTimer(0)
+    setPaused(false)
+    setFreshId(null)
+    go("recording")
+  }
+
+  async function finishRecording() {
+    const recorder = capture.engine.current
+    if (!recorder || saving) return
+    setSaving(true)
+    const take = await recorder.stopTake()
+    if (!take) {
+      setSaving(false)
+      show("Nothing was recorded.")
+      return
+    }
+    const id = uuidv7()
+    try {
+      await saveVideo(id, take.blob)
+    } catch {
+      setSaving(false)
+      show("Couldn't keep the video on this phone.")
+      go("home")
+      return
+    }
+    const segments = []
+    for (const piece of take.segments) {
+      segments.push({
+        seq: piece.seq,
+        startMs: piece.startMs,
+        durationMs: piece.durationMs,
+        sha256: await sha256(piece.blob),
+      })
+    }
+    const payload = {
+      sessionId: id,
+      childId: data.childId,
+      householdId: data.householdId,
+      startedAt: new Date(Date.now() - take.durationMs).toISOString(),
+      durationMs: take.durationMs,
+      preRollMs: take.preRollMs,
+      channels: (audioOn ? "both" : "video") as "both" | "video",
+      obscured: take.obscured,
+      events: detectStub(id, take.durationMs, take.preRollMs, data.tracked.map((item) => item.key)),
+      segments,
+    }
+    const error = await saveCapture(payload)
+    if (error) {
+      queueOutbox(payload)
+      show("Saved on this phone. It will sync when you're online.")
+    }
+    setFreshId(id)
+    setSessionId(id)
+    setTimer(Math.round(take.durationMs / 1000))
+    setSetting(null)
+    setBefore("")
+    setAssent(null)
+    setSaving(false)
+    await reload().catch(() => undefined)
+    go("details")
   }
 
   async function onVerify(decision: "confirm" | "reject") {
@@ -463,13 +686,22 @@ export function FamilyApp({
       <>
         <h1 className="h1">{data.childName}</h1>
         <p className="muted mt4">Nothing is shared unless you share it.</p>
-        <button className="home-start mt16" type="button" onClick={() => { setTimer(0); setPaused(false); setSessionId(data.sessions[0]?.id ?? ""); go("recording") }}>
+        <button className="home-start mt16" type="button" onClick={beginRecording}>
           <span className="ring"><i /></span>
           <span>
             <span className="t">Record now</span>
             <span className="s">One tap. Details after. {data.childName} can see the indicator.</span>
           </span>
         </button>
+        <p className="tiny muted mt8">
+          {capture.cameraError
+            ? capture.cameraError
+            : capture.stream
+              ? capture.readyMs >= 28000
+                ? "Camera is on. 30 seconds from before you tap are ready."
+                : "Camera is on. The lead-in is still filling."
+              : "Turning the camera on so the lead-in can start."}
+        </p>
         {ask ? (
           <div className="card mt12">
             <div className="between">
@@ -478,7 +710,7 @@ export function FamilyApp({
             </div>
             <p className="small mt8">{ask.what}{ask.setting ? `, ${ask.setting}` : ""}.</p>
             <div className="row mt12">
-              <button className="btn sm" type="button" onClick={() => { setTimer(0); go("recording") }}>Record one</button>
+              <button className="btn sm" type="button" onClick={beginRecording}>Record one</button>
               <button className="btn sm quiet" type="button" onClick={() => { void declineAsk(ask.id).then((error) => afterWrite(error, "Dismissed. They aren't told why.")) }}>Not this week</button>
             </div>
           </div>
@@ -516,20 +748,24 @@ export function FamilyApp({
           <span className="tabnum" style={{ fontSize: 22, fontWeight: 700 }}>{mmss(timer)}</span>
         </div>
         <div style={{ flex: 1, position: "relative", margin: "16px 0", borderRadius: 16, overflow: "hidden", background: "#1F2937" }}>
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#F9FAFB", textAlign: "center", padding: 24 }}>
-            The indicator stays visible. Nothing is uploaded.
-          </div>
+          <LivePreview stream={capture.stream} onSubject={(x, y) => capture.engine.current?.setSubject(x, y)} />
           <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{data.childName}</span>
-            <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{obscuring ? "Other faces obscured" : "Obscuring off"}</span>
+            <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{obscuring ? (capture.engine.current?.blurred() ? "Other faces obscured" : "Obscuring on") : "Obscuring off"}</span>
             {!audioOn ? <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>Muted</span> : null}
           </div>
-          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, opacity: 0.85 }}>Holding the 30s before you tapped.</div>
+          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>Holding the 30s before you tapped. Tap a face to mark who this is about.</div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>
           <button className="btn sm ghost" type="button" onClick={() => setSheet("discard")}>Discard</button>
-          <button className="big-stop" type="button" aria-label="Stop recording" onClick={() => go("details")}><i /></button>
-          <button className="btn sm ghost" type="button" style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => setPaused((value) => !value)}>{paused ? "Resume" : "Pause"}</button>
+          <button className="big-stop" type="button" aria-label="Stop recording" disabled={saving} onClick={() => void finishRecording()}><i /></button>
+          <button className="btn sm ghost" type="button" style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => {
+            setPaused((value) => {
+              if (value) capture.engine.current?.resume()
+              else capture.engine.current?.pause()
+              return !value
+            })
+          }}>{paused ? "Resume" : "Pause"}</button>
         </div>
         <div className="between mt16">
           <p className="tiny" style={{ opacity: 0.7 }}>If {data.childName} shows he'd rather not, stop. His response governs.</p>
@@ -575,12 +811,12 @@ export function FamilyApp({
           className="btn mt24"
           type="button"
           onClick={() => {
-            if (!session) {
+            if (!sessionId) {
               go("processing")
               return
             }
             void saveSessionDetails({
-              sessionId: session.id,
+              sessionId,
               setting,
               antecedentNote: before.trim() || null,
               childAware: assent === "yes" ? "yes" : assent === "no" ? "not_really" : null,
@@ -649,7 +885,7 @@ export function FamilyApp({
           <button className="btn secondary" type="button" onClick={() => { setMissedAt(Math.round(session.durationMs / 2000)); setSheet("missed") }}>Add an event I saw</button>
           <button className={`btn${unchecked ? " secondary" : ""}`} type="button" onClick={() => { setShareFrom("session"); setShareScope("clip"); setShareGrantId(primary?.id ?? null); go("share") }}>Share with {clinician}</button>
         </div>
-        <p className="tiny muted mt16">Kept on this phone. {session.obscured ? "Other faces obscured." : "Obscuring was off."} An observation, not a clinical finding.</p>
+        <p className="tiny muted mt16">Kept on this phone. {session.obscured ? "Other faces obscured." : "No other faces were obscured."} An observation, not a clinical finding.</p>
       </>
     )
   }
@@ -675,8 +911,19 @@ export function FamilyApp({
         <div className="row mt8"><Dot classKey={shownKey} /><h1 className="h2">{CLASSES[shownKey].name}</h1></div>
         <p className="muted small mt4">{kindLabel(shownKey, targetFor(shownKey))}. From {mmss(event.onsetMs / 1000)}, {durWord(event.durationMs / 1000)}.</p>
         <div className="player mt12">
-          <div className="scene-fallback">Kept on this phone. The playhead opens {LEAD_MS / 1000}s before the event.</div>
-          <div className="ov"><span className="badge">{session.obscured ? "Other faces obscured" : "Obscuring off"}</span></div>
+          <SessionVideo
+            sessionId={session.id}
+            playAt={playAt}
+            playing={playing}
+            speed={speed}
+            onReady={setHasVideo}
+            onTime={(ms, ended) => {
+              setPlayAt(ms)
+              if (ended || ms >= session.durationMs - 200) setPlaying(false)
+            }}
+          />
+          <div className="ov"><span className="badge">{session.obscured ? "Other faces obscured" : "No other faces obscured"}</span></div>
+          {playAt < session.preRollMs ? <div className="ante-lbl">Before you tapped</div> : null}
           <div className="tc">{mmss(playAt / 1000)} / {mmss(session.durationMs / 1000)}</div>
         </div>
         <input className="scrub" type="range" min={0} max={session.durationMs} step={250} value={playAt} aria-label="Scrub through the recording" onChange={(input) => setPlayAt(Number(input.target.value))} />
@@ -1132,7 +1379,13 @@ export function FamilyApp({
             <p className="small muted mt8">Gone for good, including anything detected and the 30 seconds before. There's no undo.</p>
             <div className="grid2 mt16">
               <button className="btn secondary" type="button" onClick={() => setSheet(null)}>Keep recording</button>
-              <button className="btn" type="button" style={{ background: "var(--danger)" }} onClick={() => { setSheet(null); go("home") }}>Discard</button>
+              <button className="btn" type="button" style={{ background: "var(--danger)" }} onClick={() => {
+                capture.engine.current?.discard()
+                setPaused(false)
+                setTimer(0)
+                setSheet(null)
+                go("home")
+              }}>Discard</button>
             </div>
           </div>
         </>
@@ -1142,8 +1395,8 @@ export function FamilyApp({
           <div className="scrim" onClick={() => setSheet(null)} />
           <div className="sheet">
             <h2 className="h3 mb4">This session</h2>
-            <div className="toggle-row"><div className="lbl">Obscure other people's faces<span className="s">This session only. There's no permanent off.</span></div><button className={`sw${obscuring ? " on" : ""}`} type="button" role="switch" aria-checked={obscuring} aria-label="Obscure other faces" onClick={() => setObscuring((value) => !value)} /></div>
-            <div className="toggle-row"><div className="lbl">Audio<span className="s">Vocal behaviour matters clinically.</span></div><button className={`sw${audioOn ? " on" : ""}`} type="button" role="switch" aria-checked={audioOn} aria-label="Audio on" onClick={() => setAudioOn((value) => !value)} /></div>
+            <div className="toggle-row"><div className="lbl">Obscure other people's faces<span className="s">This session only. There's no permanent off.</span></div><button className={`sw${obscuring ? " on" : ""}`} type="button" role="switch" aria-checked={obscuring} aria-label="Obscure other faces" onClick={() => setObscuring((value) => { capture.engine.current?.setObscuring(!value); return !value })} /></div>
+            <div className="toggle-row"><div className="lbl">Audio<span className="s">Vocal behaviour matters clinically.</span></div><button className={`sw${audioOn ? " on" : ""}`} type="button" role="switch" aria-checked={audioOn} aria-label="Audio on" onClick={() => setAudioOn((value) => { capture.engine.current?.setAudio(!value); return !value })} /></div>
             <div className="toggle-row"><div className="lbl">Who this is about<span className="s">Everyone else in frame is a bystander.</span></div><span className="chip on">{data.childName}</span></div>
             <button className="btn mt12" type="button" onClick={() => setSheet(null)}>Back to recording</button>
           </div>

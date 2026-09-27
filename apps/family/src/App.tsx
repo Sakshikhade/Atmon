@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import type { Session } from "@supabase/supabase-js"
 import { FamilyApp, Intro, SignIn, Splash } from "./FamilyApp"
-import { loadFamily } from "./lib/api"
+import { flushOutbox, loadFamily } from "./lib/api"
 import type { FamilyData } from "./lib/model"
 import { supabase } from "./lib/supabase"
 
@@ -25,7 +25,9 @@ export function App() {
   useEffect(() => {
     if (!session) return
     setError(null)
-    loadFamily(session.user.id)
+    flushOutbox()
+      .catch(() => undefined)
+      .then(() => loadFamily(session.user.id))
       .then(setData)
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load the log."))
   }, [session])
@@ -33,6 +35,7 @@ export function App() {
   const reload = useCallback(async () => {
     const { data: auth } = await supabase.auth.getUser()
     if (!auth.user) return
+    await flushOutbox().catch(() => undefined)
     setData(await loadFamily(auth.user.id))
   }, [])
 
