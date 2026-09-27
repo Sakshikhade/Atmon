@@ -10,12 +10,14 @@ export type FamilyEvent = {
   durationMs: number
   confidence: "confident" | "needs_a_look" | null
   status: EventStatus
+  familyDecision: Decision | null
   source: "system" | "family"
   channels: Channels
   flagged: boolean
   note: string
   correctedKey: ClassKey | null
   mediaSuppressed: boolean
+  clinicianJudgement: { role: string; decision: Decision } | null
 }
 
 export type FamilySession = {
@@ -41,6 +43,7 @@ export type HouseholdMember = {
 
 export type GrantRow = {
   id: string
+  clinicianId: string | null
   inviteEmail: string
   role: string
   displayName: string
@@ -146,6 +149,20 @@ export function roleWord(role: string): string {
 
 export function yourClin(role: string | null): string {
   return role ? `your ${roleWord(role)}` : "your clinician"
+}
+
+export function clinicianSaid(role: string, decision: Decision): string {
+  const who = yourClin(role)
+  const sentence =
+    decision === "confirm" ? `${who} confirmed this.` : decision === "reject" ? `${who} said this isn't it.` : `${who} corrected this.`
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1)
+}
+
+export function familyStatus(event: FamilyEvent): EventStatus {
+  if (event.familyDecision === "confirm") return "confirmed"
+  if (event.familyDecision === "correct") return "corrected"
+  if (event.familyDecision === "reject") return "rejected"
+  return "detected"
 }
 
 const SETTING_LABEL: Record<string, string> = {

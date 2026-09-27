@@ -50,7 +50,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
   const child = await supabase.from("children").select("display_name").eq("id", childId).single()
   if (child.error) throw new Error(child.error.message)
 
-  const [sessionsRes, eventsRes, notesRes, trackedRes, grantsRes, asksRes, consentsRes, retentionRes, accessRes] =
+  const [sessionsRes, eventsRes, notesRes, trackedRes, grantsRes, asksRes, verificationsRes, consentsRes, retentionRes, accessRes] =
     await Promise.all([
       supabase
         .from("sessions")
@@ -70,10 +70,11 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       supabase
         .from("share_grants")
         .select(
-          "id, invite_email, clinician_role, clinician_display_name, scope, expires_at, export_allowed, download_allowed, status",
+          "id, clinician_id, invite_email, clinician_role, clinician_display_name, scope, expires_at, export_allowed, download_allowed, status",
         )
         .eq("household_id", mine.household_id),
       supabase.from("capture_requests").select("id, grant_id, what, setting, status"),
+      supabase.from("event_verifications").select("event_id, actor_id, actor_kind, decision, corrected_class_key, created_at"),
       supabase
         .from("consents")
         .select("purpose, granted, created_at")
@@ -94,6 +95,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
     trackedRes,
     grantsRes,
     asksRes,
+    verificationsRes,
     consentsRes,
     retentionRes,
     accessRes,
@@ -106,9 +108,33 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
     if (note.event_id && !notes.has(note.event_id)) notes.set(note.event_id, note.body)
   }
 
+  const familyDecision = new Map<string, Decision>()
+  const familyCorrected = new Map<string, ClassKey>()
+  const clinicianDecision = new Map<string, { actorId: string; decision: Decision }>()
+  const verifications = [...(verificationsRes.data ?? [])].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  for (const row of verifications) {
+    if (!row.event_id) continue
+    const decision = row.decision
+    if (decision !== "confirm" && decision !== "correct" && decision !== "reject") continue
+    if (row.actor_kind === "family" && !familyDecision.has(row.event_id)) {
+      familyDecision.set(row.event_id, decision)
+      if (decision === "correct" && row.corrected_class_key && isClassKey(row.corrected_class_key)) {
+        familyCorrected.set(row.event_id, row.corrected_class_key)
+      }
+    }
+    if (row.actor_kind === "clinician" && !clinicianDecision.has(row.event_id)) {
+      clinicianDecision.set(row.event_id, { actorId: row.actor_id, decision })
+    }
+  }
+  const roleByClinician = new Map<string, string>()
+  for (const row of grantsRes.data ?? []) {
+    if (row.clinician_id && !roleByClinician.has(row.clinician_id)) roleByClinician.set(row.clinician_id, row.clinician_role)
+  }
+
   const eventsBySession = new Map<string, FamilyEvent[]>()
   for (const row of eventsRes.data ?? []) {
     if (!isClassKey(row.class_key)) continue
+    const judged = clinicianDecision.get(row.id)
     const event: FamilyEvent = {
       id: row.id,
       classKey: row.class_key,
@@ -116,12 +142,14 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       durationMs: row.duration_ms,
       confidence: row.confidence_band,
       status: row.status,
+      familyDecision: familyDecision.get(row.id) ?? null,
       source: row.source === "family" ? "family" : "system",
       channels: asChannels(row.channels),
       flagged: row.flagged,
       note: notes.get(row.id) ?? "",
-      correctedKey: row.corrected_class_key && isClassKey(row.corrected_class_key) ? row.corrected_class_key : null,
+      correctedKey: familyCorrected.get(row.id) ?? null,
       mediaSuppressed: row.media_suppressed === true,
+      clinicianJudgement: judged ? { role: roleByClinician.get(judged.actorId) ?? "other", decision: judged.decision } : null,
     }
     const list = eventsBySession.get(row.session_id) ?? []
     list.push(event)
@@ -156,6 +184,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
     const tally = counts.get(row.id) ?? { viewed: 0, exported: 0, downloaded: 0 }
     return {
       id: row.id,
+      clinicianId: row.clinician_id,
       inviteEmail: row.invite_email,
       role: row.clinician_role,
       displayName: row.clinician_display_name,
@@ -335,6 +364,33 @@ export async function createGrant(input: {
       clip_start_ms: item.startMs,
       clip_end_ms: item.endMs,
     })),
+  )
+  return items.error?.message ?? null
+}
+
+export async function shareOntoGrant(input: {
+  grantId: string
+  scope: GrantRow["scope"]
+  expiresAt: string
+  downloadAllowed: boolean
+  items: { eventId: string; startMs: number; endMs: number }[]
+}): Promise<string | null> {
+  const updated = await updateGrant(input.grantId, {
+    scope: input.scope,
+    expires_at: input.expiresAt,
+    download_allowed: input.downloadAllowed,
+    download_ack_at: input.downloadAllowed ? new Date().toISOString() : null,
+  })
+  if (updated) return updated
+  if (input.items.length === 0) return null
+  const items = await supabase.from("share_grant_items").upsert(
+    input.items.map((item) => ({
+      grant_id: input.grantId,
+      event_id: item.eventId,
+      clip_start_ms: item.startMs,
+      clip_end_ms: item.endMs,
+    })),
+    { onConflict: "grant_id,event_id" },
   )
   return items.error?.message ?? null
 }

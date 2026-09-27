@@ -9,6 +9,7 @@ import {
   saveConsent,
   saveRetention,
   saveSessionDetails,
+  shareOntoGrant,
   setFlag,
   updateGrant,
   verifyEvent,
@@ -26,7 +27,9 @@ import {
   TAIL_MS,
   badgeWord,
   channelsLabel,
+  clinicianSaid,
   confWord,
+  familyStatus,
   durWord,
   kindLabel,
   mmss,
@@ -134,7 +137,7 @@ function Timeline({
       ) : null}
       {session.events.filter((event) => !event.mediaSuppressed).map((event) => {
         const lead = Math.max(0, event.onsetMs - LEAD_MS)
-        const excluded = event.status === "rejected"
+        const excluded = familyStatus(event) === "rejected"
         return (
           <span key={event.id}>
             <span className="ante" style={mark(lead, event.onsetMs - lead, session.durationMs, CLASSES[event.classKey].color)} />
@@ -171,10 +174,11 @@ function Timeline({
 }
 
 function eventMeta(event: FamilyEvent, trackedTarget: boolean) {
-  const low = event.confidence === "needs_a_look" && event.status === "detected"
+  const status = familyStatus(event)
+  const low = event.confidence === "needs_a_look" && status === "detected"
   const extra = event.source === "family" ? " (yours)" : event.channels === "audio" ? " (sound)" : ""
-  const label = low ? "Needs a look" : event.source === "family" && event.status === "detected" ? "You added this" : badgeWord(event.status)
-  const badgeClass = low ? "warn" : event.status === "confirmed" || event.status === "corrected" ? "ok" : event.status === "rejected" ? "outline" : ""
+  const label = low ? "Needs a look" : event.source === "family" && status === "detected" ? "You added this" : badgeWord(status)
+  const badgeClass = low ? "warn" : status === "confirmed" || status === "corrected" ? "ok" : status === "rejected" ? "outline" : ""
   return { low, extra, label, badgeClass, target: trackedTarget }
 }
 
@@ -655,7 +659,7 @@ export function FamilyApp({
       return
     }
     await reload()
-    const remaining = (session?.events ?? []).filter((item) => !item.mediaSuppressed && item.id !== event.id && item.status === "detected")
+    const remaining = (session?.events ?? []).filter((item) => !item.mediaSuppressed && item.id !== event.id && familyStatus(item) === "detected")
     if (checkRun && remaining.length) {
       openEvent(remaining[0].id)
       setCheckRun(true)
@@ -685,7 +689,7 @@ export function FamilyApp({
     return (
       <button className="ev-item" type="button" onClick={() => openEvent(item.id, parent.id)}>
         <Dot classKey={item.classKey} />
-        <span className={`title${item.status === "rejected" ? " struck" : ""}`}>
+        <span className={`title${familyStatus(item) === "rejected" ? " struck" : ""}`}>
           {CLASSES[item.classKey].short}
           {meta.extra}
         </span>
@@ -696,13 +700,14 @@ export function FamilyApp({
           </svg>
         ) : null}
         <span className={`badge ${meta.badgeClass}`}>{meta.label}</span>
+        {item.clinicianJudgement ? <span className="badge ok">{roleWord(item.clinicianJudgement.role)} {item.clinicianJudgement.decision === "confirm" ? "confirmed" : item.clinicianJudgement.decision === "reject" ? "said not this" : "corrected"}</span> : null}
       </button>
     )
   }
 
   function SessionCard({ item }: { item: FamilySession }) {
-    const live = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status !== "rejected").length
-    const unchecked = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected").length
+    const live = item.events.filter((eventItem) => !eventItem.mediaSuppressed && familyStatus(eventItem) !== "rejected").length
+    const unchecked = item.events.filter((eventItem) => !eventItem.mediaSuppressed && familyStatus(eventItem) === "detected").length
     const flagged = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.flagged).length
     return (
       <button className="sess-card" type="button" onClick={() => openSession(item.id)}>
@@ -722,8 +727,8 @@ export function FamilyApp({
   }
 
   const ask = data.asks[0]
-  const toCheck = data.sessions.find((item) => item.events.some((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected"))
-  const uncheckedCount = toCheck?.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected").length ?? 0
+  const toCheck = data.sessions.find((item) => item.events.some((eventItem) => !eventItem.mediaSuppressed && familyStatus(eventItem) === "detected"))
+  const uncheckedCount = toCheck?.events.filter((eventItem) => !eventItem.mediaSuppressed && familyStatus(eventItem) === "detected").length ?? 0
 
   let body: ReactNode = null
 
@@ -765,7 +770,7 @@ export function FamilyApp({
         ) : null}
         {toCheck && uncheckedCount ? (
           <button className="card mt12" style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }} type="button" onClick={() => {
-            const next = toCheck.events.find((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected")
+            const next = toCheck.events.find((eventItem) => !eventItem.mediaSuppressed && familyStatus(eventItem) === "detected")
             if (!next) return
             setCheckRun(true)
             openEvent(next.id, toCheck.id)
@@ -897,8 +902,8 @@ export function FamilyApp({
   }
 
   if (screen === "session" && session) {
-    const live = session.events.filter((item) => !item.mediaSuppressed && item.status !== "rejected").length
-    const unchecked = session.events.filter((item) => !item.mediaSuppressed && item.status === "detected").length
+    const live = session.events.filter((item) => !item.mediaSuppressed && familyStatus(item) !== "rejected").length
+    const unchecked = session.events.filter((item) => !item.mediaSuppressed && familyStatus(item) === "detected").length
     body = (
       <>
         <button className="btn quiet" type="button" onClick={() => go("log")}>‹ Sessions</button>
@@ -925,7 +930,7 @@ export function FamilyApp({
         </div>
         {unchecked ? (
           <button className="btn mt16" type="button" onClick={() => {
-            const next = session.events.find((item) => !item.mediaSuppressed && item.status === "detected")
+            const next = session.events.find((item) => !item.mediaSuppressed && familyStatus(item) === "detected")
             if (!next) return
             setCheckRun(true)
             openEvent(next.id)
@@ -942,7 +947,7 @@ export function FamilyApp({
   }
 
   if (screen === "event" && session && event) {
-    const left = session.events.filter((item) => !item.mediaSuppressed && item.status === "detected").length
+    const left = session.events.filter((item) => !item.mediaSuppressed && familyStatus(item) === "detected").length
     const shownKey = event.correctedKey ?? event.classKey
     body = (
       <>
@@ -952,7 +957,7 @@ export function FamilyApp({
             <span className="row">
               <span className="badge primary">{left} left</span>
               <button className="btn quiet sm" type="button" onClick={() => {
-                const next = session.events.find((item) => !item.mediaSuppressed && item.status === "detected" && item.id !== event.id)
+                const next = session.events.find((item) => !item.mediaSuppressed && familyStatus(item) === "detected" && item.id !== event.id)
                 if (next) openEvent(next.id)
                 else { setCheckRun(false); go("session") }
               }}>Skip</button>
@@ -1002,11 +1007,12 @@ export function FamilyApp({
             <span className={`badge${event.confidence === "needs_a_look" ? " warn" : ""}`}>{event.source === "family" ? "You added this" : confWord(event.confidence)}</span>
           </div>
           <div className="check3">
-            <button type="button" className={event.status === "confirmed" ? "on" : ""} onClick={() => void onVerify("confirm")}>Yes</button>
-            <button type="button" className={event.status === "corrected" ? "on" : ""} onClick={() => setSheet("correct")}>Change</button>
-            <button type="button" className={event.status === "rejected" ? "on" : ""} onClick={() => void onVerify("reject")}>Not this</button>
+            <button type="button" className={familyStatus(event) === "confirmed" ? "on" : ""} onClick={() => void onVerify("confirm")}>Yes</button>
+            <button type="button" className={familyStatus(event) === "corrected" ? "on" : ""} onClick={() => setSheet("correct")}>Change</button>
+            <button type="button" className={familyStatus(event) === "rejected" ? "on" : ""} onClick={() => void onVerify("reject")}>Not this</button>
           </div>
           <p className="tiny muted mt8">For {CLASSES[event.classKey].short.toLowerCase()}, the app is {CLASSES[event.classKey].reliability.toLowerCase()} Your answer is kept next to what it found, never over it.</p>
+          {event.clinicianJudgement ? <p className="small mt8">{clinicianSaid(event.clinicianJudgement.role, event.clinicianJudgement.decision)}</p> : null}
         </div>
         <div className="actions mt12">
           <button className={`btn ${event.flagged ? "soft" : "secondary"}`} type="button" onClick={() => void setFlag(event.id, !event.flagged, data.userId).then((error) => afterWrite(error, event.flagged ? "Flag removed." : `Flagged for ${clinician}`))}>
@@ -1098,7 +1104,7 @@ export function FamilyApp({
               onClick={() => {
                 const grant = openGrants.find((item) => item.id === shareGrantId) ?? openGrants[0]
                 if (!grant) return
-                const chosen = fromEvent ? [event] : shareScope === "clip" ? flagged : session.events.filter((item) => !item.mediaSuppressed && item.status !== "rejected")
+                const chosen = fromEvent ? [event] : shareScope === "clip" ? flagged : session.events.filter((item) => !item.mediaSuppressed && familyStatus(item) !== "rejected")
                 const expires = shareExpiry === "custom" && expiryDate
                   ? new Date(`${expiryDate}T23:59:59`).toISOString()
                   : new Date(Date.now() + Number(shareExpiry) * 86400000).toISOString()
@@ -1112,13 +1118,8 @@ export function FamilyApp({
                   : fromEvent
                     ? `1 clip: ${CLASSES[event.classKey].short}, ${mmss(Math.max(0, event.onsetMs - LEAD_MS) / 1000)} to ${mmss((event.onsetMs + event.durationMs + TAIL_MS) / 1000)}`
                     : `${flagged.length} flagged clip${flagged.length === 1 ? "" : "s"} from ${settingLabel(session.setting)}, each with its lead-in`
-                void createGrant({
-                  householdId: data.householdId,
-                  childId: data.childId,
-                  userId: data.userId,
-                  email: grant.inviteEmail,
-                  role: grant.role,
-                  displayName: grant.displayName,
+                void shareOntoGrant({
+                  grantId: grant.id,
                   scope: shareScope === "session" ? "session" : fromEvent ? "clip" : "flagged",
                   expiresAt: expires,
                   downloadAllowed: shareDownload,
@@ -1176,7 +1177,7 @@ export function FamilyApp({
   }
 
   if (screen === "log") {
-    const rows = data.sessions.flatMap((item) => item.events.filter((eventItem) => eventItem.status !== "rejected").map((eventItem) => ({ session: item, event: eventItem }))).filter((row) => (row.event.mediaSuppressed ? logFilter === "all" : logFilter === "all" || row.event.classKey === logFilter))
+    const rows = data.sessions.flatMap((item) => item.events.filter((eventItem) => familyStatus(eventItem) !== "rejected").map((eventItem) => ({ session: item, event: eventItem }))).filter((row) => (row.event.mediaSuppressed ? logFilter === "all" : logFilter === "all" || row.event.classKey === logFilter))
     body = (
       <>
         <div className="between">
@@ -1224,7 +1225,7 @@ export function FamilyApp({
     const bySetting = new Map<string, Map<ClassKey, number>>()
     for (const item of data.sessions) {
       for (const eventItem of item.events) {
-        if (eventItem.mediaSuppressed || eventItem.status === "rejected") continue
+        if (eventItem.mediaSuppressed || familyStatus(eventItem) === "rejected") continue
         counts.set(eventItem.classKey, (counts.get(eventItem.classKey) ?? 0) + 1)
         const bucket = bySetting.get(settingLabel(item.setting)) ?? new Map()
         bucket.set(eventItem.classKey, (bucket.get(eventItem.classKey) ?? 0) + 1)

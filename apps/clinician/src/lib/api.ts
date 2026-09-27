@@ -22,7 +22,7 @@ export async function loadClinician(userId: string): Promise<ClinData> {
   const grantRows = grantsRes.data ?? []
   const childIds = [...new Set(grantRows.map((row) => row.child_id))]
 
-  const [childrenRes, sessionsRes, eventsRes, notesRes, verificationsRes, antecedentsRes, requestsRes] = await Promise.all([
+  const [childrenRes, sessionsRes, eventsRes, notesRes, verificationsRes, antecedentsRes, requestsRes, itemsRes] = await Promise.all([
     childIds.length
       ? supabase.from("children").select("id, display_name").in("id", childIds)
       : Promise.resolve({ data: [], error: null }),
@@ -32,8 +32,11 @@ export async function loadClinician(userId: string): Promise<ClinData> {
     supabase.from("event_verifications").select("event_id, actor_id, actor_kind, decision, created_at").eq("actor_id", userId),
     supabase.from("event_antecedents").select("event_id, text"),
     supabase.from("capture_requests").select("id, grant_id, what, setting, status").eq("clinician_id", userId),
+    grantRows.length
+      ? supabase.from("share_grant_items").select("grant_id, event_id").in("grant_id", grantRows.map((row) => row.id))
+      : Promise.resolve({ data: [], error: null }),
   ])
-  for (const result of [childrenRes, sessionsRes, eventsRes, notesRes, verificationsRes, antecedentsRes, requestsRes]) {
+  for (const result of [childrenRes, sessionsRes, eventsRes, notesRes, verificationsRes, antecedentsRes, requestsRes, itemsRes]) {
     if (result.error) throw new Error(result.error.message)
   }
 
@@ -50,10 +53,15 @@ export async function loadClinician(userId: string): Promise<ClinData> {
     }
   }
   const antecedents = new Map((antecedentsRes.data ?? []).map((row) => [row.event_id, row.text as string]))
+  const coveredChildren = new Set(childIds)
+  const openChildren = new Set(grantRows.filter((row) => row.scope === "all").map((row) => row.child_id))
+  const sharedEvents = new Set((itemsRes.data ?? []).map((row) => row.event_id))
 
   const eventsBySession = new Map<string, ClinEvent[]>()
   for (const row of eventsRes.data ?? []) {
     if (!isClassKey(row.class_key)) continue
+    if (!coveredChildren.has(row.child_id)) continue
+    if (!openChildren.has(row.child_id) && !sharedEvents.has(row.id)) continue
     const event: ClinEvent = {
       id: row.id,
       sessionId: row.session_id,
@@ -74,16 +82,19 @@ export async function loadClinician(userId: string): Promise<ClinData> {
     eventsBySession.set(row.session_id, list)
   }
 
-  const sessions: ClinSession[] = (sessionsRes.data ?? []).map((row) => ({
-    id: row.id,
-    childId: row.child_id,
-    startedAt: row.started_at,
-    durationMs: row.duration_ms,
-    preRollMs: row.pre_roll_ms ?? 0,
-    setting: row.setting,
-    antecedentNote: row.antecedent_note,
-    events: (eventsBySession.get(row.id) ?? []).sort((a, b) => a.onsetMs - b.onsetMs),
-  }))
+  const sessions: ClinSession[] = (sessionsRes.data ?? [])
+    .filter((row) => coveredChildren.has(row.child_id))
+    .map((row) => ({
+      id: row.id,
+      childId: row.child_id,
+      startedAt: row.started_at,
+      durationMs: row.duration_ms,
+      preRollMs: row.pre_roll_ms ?? 0,
+      setting: row.setting,
+      antecedentNote: row.antecedent_note,
+      events: (eventsBySession.get(row.id) ?? []).sort((a, b) => a.onsetMs - b.onsetMs),
+    }))
+    .filter((session) => openChildren.has(session.childId) || session.events.length > 0)
 
   return {
     userId,
