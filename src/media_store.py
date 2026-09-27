@@ -144,6 +144,35 @@ def upload_recording(session_id: str, user_id: str, body: bytes, content_type: s
         raise MediaError("Recording is empty or too large")
     if not _owns_session(session_id, user_id):
         raise MediaError("This recording is not yours")
+    key = object_key(session_id)
+    _put_object(key, body, content_type or "video/webm")
+    _mark_uploaded(session_id, key)
+    return key
+
+
+def upload_object(key: str, body: bytes, content_type: str) -> None:
+    if not body or len(body) > _MAX_BYTES:
+        raise MediaError("Recording is empty or too large")
+    _put_object(key, body, content_type)
+
+
+def download_object(key: str) -> bytes:
+    auth = _account()
+    _key_id, _app_key, bucket = _require_b2()
+    request = urllib.request.Request(
+        f"{auth['downloadUrl']}/file/{bucket}/{encoded_name(key)}",
+        headers={"Authorization": auth["authorizationToken"]},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        raise MediaError("The export file could not be opened") from exc
+    except urllib.error.URLError as exc:
+        raise MediaError("Could not reach Backblaze") from exc
+
+
+def _put_object(key: str, body: bytes, content_type: str) -> None:
     auth = _account()
     bucket_id = _bucket_id(auth)
     upload = _b2_json(
@@ -151,7 +180,6 @@ def upload_recording(session_id: str, user_id: str, body: bytes, content_type: s
         {"bucketId": bucket_id},
         {"Authorization": auth["authorizationToken"], "Content-Type": "application/json"},
     )
-    key = object_key(session_id)
     digest = hashlib.sha1(body).hexdigest()
     request = urllib.request.Request(
         upload["uploadUrl"],
@@ -160,7 +188,7 @@ def upload_recording(session_id: str, user_id: str, body: bytes, content_type: s
         headers={
             "Authorization": upload["authorizationToken"],
             "X-Bz-File-Name": encoded_name(key),
-            "Content-Type": content_type or "video/webm",
+            "Content-Type": content_type,
             "X-Bz-Content-Sha1": digest,
         },
     )
@@ -168,19 +196,24 @@ def upload_recording(session_id: str, user_id: str, body: bytes, content_type: s
         with urllib.request.urlopen(request, timeout=120) as response:
             response.read()
     except urllib.error.HTTPError as exc:
-        raise MediaError("Backblaze did not store the recording") from exc
+        raise MediaError("Backblaze did not store the file") from exc
     except urllib.error.URLError as exc:
         raise MediaError("Could not reach Backblaze") from exc
-    _mark_uploaded(session_id, key)
-    return key
 
 
-def playback_url(session_id: str, user_id: str) -> str:
-    if not _UUID.match(session_id):
-        raise MediaError("Unknown session")
-    key = _playable_key(session_id, user_id)
-    if key is None:
-        raise MediaError("This clip has not been uploaded")
+def playback_url(session_id: str, user_id: str, event_id: str | None = None) -> str:
+    key, grant_id = _resolve_playback(session_id, user_id)
+    url = _signed_url(key)
+    if grant_id:
+        record_access(grant_id, user_id, "played", session_id, _event_on_session(session_id, event_id), None)
+    return url
+
+
+def playback_still_open(session_id: str, user_id: str) -> None:
+    _resolve_playback(session_id, user_id)
+
+
+def _signed_url(key: str) -> str:
     auth = _account()
     bucket_id = _bucket_id(auth)
     _key_id, _app_key, bucket = _require_b2()
@@ -191,6 +224,27 @@ def playback_url(session_id: str, user_id: str) -> str:
     )
     token = urllib.parse.quote(granted["authorizationToken"], safe="")
     return f"{auth['downloadUrl']}/file/{bucket}/{encoded_name(key)}?Authorization={token}"
+
+
+def record_access(
+    grant_id: str,
+    clinician_id: str,
+    action: str,
+    session_id: str | None,
+    event_id: str | None,
+    export_id: str | None,
+) -> None:
+    with connect_postgres("DIRECT_URL") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into app.access_log
+                  (grant_id, clinician_id, action, session_id, event_id, export_id)
+                values (%s, %s, %s, %s, %s, %s)
+                """,
+                (grant_id, clinician_id, action, session_id, event_id, export_id),
+            )
+        conn.commit()
 
 
 def _owns_session(session_id: str, user_id: str) -> bool:
@@ -232,18 +286,44 @@ def _mark_uploaded(session_id: str, key: str) -> None:
         conn.commit()
 
 
-def _playable_key(session_id: str, user_id: str) -> str | None:
+def _resolve_playback(session_id: str, user_id: str) -> tuple[str, str | None]:
+    if not _UUID.match(session_id):
+        raise MediaError("Unknown session")
     with connect_postgres("DIRECT_URL") as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                select seg.storage_path
-                from app.sessions s
-                join app.session_segments seg on seg.session_id = s.id
-                where s.id = %s
-                  and seg.storage_path is not null
-                  and seg.storage_path not like 'idb:%%'
-                  and (
+                select
+                  (
+                    select seg.storage_path
+                    from app.session_segments seg
+                    where seg.session_id = s.id
+                      and seg.storage_path is not null
+                      and seg.storage_path not like 'idb:%%'
+                    order by seg.seq
+                    limit 1
+                  ) as storage_path,
+                  (
+                    select g.id::text
+                    from app.share_grants g
+                    where g.clinician_id = %s
+                      and g.child_id = s.child_id
+                      and g.status = 'active'
+                      and g.expires_at > now()
+                      and (
+                        g.scope = 'all'
+                        or exists (
+                          select 1
+                          from app.events e
+                          join app.share_grant_items i
+                            on i.event_id = e.id and i.grant_id = g.id
+                          where e.session_id = s.id
+                        )
+                      )
+                    order by g.expires_at desc
+                    limit 1
+                  ) as grant_id,
+                  (
                     s.recorded_by = %s
                     or exists (
                       select 1 from app.household_members m
@@ -251,31 +331,32 @@ def _playable_key(session_id: str, user_id: str) -> str | None:
                         and m.user_id = %s
                         and m.can_view
                     )
-                    or exists (
-                      select 1
-                      from app.events e
-                      join app.share_grant_items i on i.event_id = e.id
-                      join app.share_grants g on g.id = i.grant_id
-                      where e.session_id = s.id
-                        and g.clinician_id = %s
-                        and g.status = 'active'
-                        and g.expires_at > now()
-                    )
-                    or exists (
-                      select 1 from app.share_grants g
-                      where g.child_id = s.child_id
-                        and g.scope = 'all'
-                        and g.clinician_id = %s
-                        and g.status = 'active'
-                        and g.expires_at > now()
-                    )
-                  )
-                order by seg.seq
-                limit 1
+                  ) as household
+                from app.sessions s
+                where s.id = %s
                 """,
-                (session_id, user_id, user_id, user_id, user_id),
+                (user_id, user_id, user_id, session_id),
             )
             row = cur.fetchone()
     if row is None:
+        raise MediaError("Unknown session")
+    path, grant_id, household = row
+    if not path:
+        raise MediaError("This clip has not been uploaded")
+    if not household and not grant_id:
+        raise MediaError("This access has ended")
+    return path, grant_id
+
+
+def _event_on_session(session_id: str, event_id: str | None) -> str | None:
+    if not event_id or not _UUID.match(event_id):
         return None
-    return row[0]
+    with connect_postgres("DIRECT_URL") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select 1 from app.events where id = %s and session_id = %s",
+                (event_id, session_id),
+            )
+            if cur.fetchone() is None:
+                return None
+    return event_id

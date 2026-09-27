@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
-import { askCapture, judgeEvent, saveAntecedent, sendFamilyNote } from "./lib/api"
-import { playbackUrl } from "./lib/cloudMedia"
+import { askCapture, judgeEvent, loadExports, saveAntecedent, sendFamilyNote, type StoredExport } from "./lib/api"
+import { downloadExport, downloadStoredExport, playbackStillOpen, playbackUrl } from "./lib/cloudMedia"
 import {
   CLASS_KEYS,
   CLASSES,
@@ -46,6 +46,7 @@ export function ClinicianApp({
   const [askMessage, setAskMessage] = useState("")
   const [clipUrl, setClipUrl] = useState<string | null>(null)
   const [clipNote, setClipNote] = useState<string | null>(null)
+  const [logExports, setLogExports] = useState<StoredExport[] | null>(null)
 
   const events = useMemo(() => data.sessions.flatMap((session) => session.events), [data.sessions])
   const waiting = events.filter((event) => event.flagged && !event.mediaSuppressed && !event.clinicianDecision)
@@ -54,8 +55,9 @@ export function ClinicianApp({
   const session = data.sessions.find((item) => item.id === event?.sessionId) ?? null
 
   const sessionId = session?.id ?? null
+  const openEventId = event?.id ?? null
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || !openEventId) {
       setClipUrl(null)
       setClipNote(null)
       return
@@ -63,7 +65,7 @@ export function ClinicianApp({
     let cancel = false
     setClipUrl(null)
     setClipNote(null)
-    void playbackUrl(sessionId).then((result) => {
+    void playbackUrl(sessionId, openEventId).then((result) => {
       if (cancel) return
       setClipUrl(result.url)
       setClipNote(result.message)
@@ -71,7 +73,24 @@ export function ClinicianApp({
     return () => {
       cancel = true
     }
-  }, [sessionId])
+  }, [sessionId, openEventId])
+
+  useEffect(() => {
+    if (!clipUrl || !sessionId) return
+    const timer = window.setInterval(() => {
+      void playbackStillOpen(sessionId).then((open) => {
+        if (open) return
+        setClipUrl(null)
+        setClipNote("This access has ended. The clip is no longer open on this screen.")
+      })
+    }, 15000)
+    return () => window.clearInterval(timer)
+  }, [clipUrl, sessionId])
+
+  useEffect(() => {
+    if (screen !== "exports") return
+    void loadExports().then(setLogExports).catch(() => setLogExports([]))
+  }, [screen])
 
   function show(message: string) {
     setToast(message)
@@ -381,7 +400,17 @@ export function ClinicianApp({
               }}>Send note</button>
             </div>
             <div className="row mt16">
-              <button className="btn secondary" type="button" onClick={() => show("PDF export isn't connected yet. Nothing was created.")}>Export log</button>
+              <button className="btn secondary" type="button" onClick={() => {
+                const exportGrant = data.grants.find((item) => item.childId === event.childId && item.exportAllowed)
+                if (!exportGrant) {
+                  show("This grant does not include a log export.")
+                  return
+                }
+                void downloadExport(exportGrant.id).then((error) => {
+                  if (error) show(error)
+                  else show("Export saved. The family can see it under Sharing.")
+                })
+              }}>Export log</button>
               <button className="btn" type="button" onClick={() => { const next = waiting.find((item) => item.id !== event.id); if (next) openReview(next); else setScreen("queue") }}>Next in queue</button>
             </div>
           </div>
@@ -409,9 +438,19 @@ export function ClinicianApp({
       <>
         <h1 className="h1">Exports</h1>
         <p className="muted mt4">Every log you've exported. Each one is also shown to the family. None contain video or audio.</p>
-        <div className="card mt24" style={{ maxWidth: 640 }}>
-          <p>PDF export isn't connected yet. Nothing has been created from this workspace.</p>
-        </div>
+        <div className="callout mt16">Everything here is an observation. Nothing this product outputs is a diagnosis or a clinical finding.</div>
+        {logExports === null ? <p className="mt24">Opening exports.</p> : logExports.length === 0 ? <p className="mt24">No exports yet.</p> : (
+          <table className="table mt24"><thead><tr><th>Child</th><th>Events</th><th>Methodology</th><th></th></tr></thead><tbody>
+            {logExports.map((item) => (
+              <tr key={item.id}>
+                <td>{data.grants.find((grant) => grant.childId === item.childId)?.childName ?? "Child"}</td>
+                <td>{item.eventCount}</td>
+                <td className="small">{item.methodologyVersion}</td>
+                <td><button className="btn quiet sm" type="button" onClick={() => void downloadStoredExport(item.id).then((error) => { if (error) show(error) })}>Download</button></td>
+              </tr>
+            ))}
+          </tbody></table>
+        )}
       </>
     )
   }

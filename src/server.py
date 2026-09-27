@@ -17,11 +17,18 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from src.clinical_export import create_export, fetch_export
 from src.env_config import load_environment, print_env_banner
 from src.event_storage import EventStorage
 from src.family_store import FEATURE_HOME_CAMERA_PHASE2, FamilyStore
 from src.logging_config import configure_logging, get_logger
-from src.media_store import MediaError, playback_url, upload_recording, user_id_from_token
+from src.media_store import (
+    MediaError,
+    playback_still_open,
+    playback_url,
+    upload_recording,
+    user_id_from_token,
+)
 from src.postgres_db import connect_postgres
 
 logger = get_logger(__name__)
@@ -106,7 +113,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/media/sessions/"):
-            self._handle_media_play(path[len("/media/sessions/"):])
+            self._handle_media_play(path[len("/media/sessions/"):], query_params)
+            return
+        if path.startswith("/exports/"):
+            self._handle_export_download(path[len("/exports/"):])
             return
 
         # 404 Not Found
@@ -122,6 +132,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/media/sessions/"):
             self._handle_media_upload(path[len("/media/sessions/"):])
+            return
+        if path == "/exports":
+            self._handle_export_create()
             return
         self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -474,21 +487,81 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"storage_path": key}, status=HTTPStatus.CREATED)
 
-    def _handle_media_play(self, session_id: str) -> None:
+    def _handle_media_play(self, rest: str, query_params: dict) -> None:
+        if rest.endswith("/status"):
+            self._handle_media_status(rest[: -len("/status")])
+            return
+        user_id = self._media_user()
+        if user_id is None:
+            return
+        event_id = (query_params.get("event") or [None])[0]
+        try:
+            url = playback_url(rest, user_id, event_id)
+        except MediaError as exc:
+            self._send_media_error(rest, exc)
+            return
+        logger.info("Media play %s -> link", rest)
+        self._send_json({"url": url, "expires_in": 60})
+
+    def _handle_media_status(self, session_id: str) -> None:
         user_id = self._media_user()
         if user_id is None:
             return
         try:
-            url = playback_url(session_id, user_id)
+            playback_still_open(session_id, user_id)
         except MediaError as exc:
-            code = HTTPStatus.NOT_FOUND if "not been uploaded" in str(exc) else HTTPStatus.BAD_GATEWAY
-            if "Sign in" in str(exc):
-                code = HTTPStatus.UNAUTHORIZED
-            logger.info("Media play %s -> %s", session_id, exc)
-            self._send_json({"error": str(exc)}, status=code)
+            self._send_media_error(session_id, exc)
             return
-        logger.info("Media play %s -> link", session_id)
-        self._send_json({"url": url, "expires_in": 60})
+        self._send_json({"open": True})
+
+    def _send_media_error(self, session_id: str, exc: MediaError) -> None:
+        message = str(exc)
+        code = HTTPStatus.BAD_GATEWAY
+        if "not been uploaded" in message or "Unknown" in message:
+            code = HTTPStatus.NOT_FOUND
+        elif "ended" in message or "not yours" in message or "does not include" in message:
+            code = HTTPStatus.FORBIDDEN
+        elif "Sign in" in message:
+            code = HTTPStatus.UNAUTHORIZED
+        logger.info("Media play %s -> %s", session_id, exc)
+        self._send_json({"error": message}, status=code)
+
+    def _handle_export_create(self) -> None:
+        user_id = self._media_user()
+        if user_id is None:
+            return
+        body = self._read_json_body() or {}
+        grant_id = body.get("grantId") if isinstance(body, dict) else None
+        if not isinstance(grant_id, str):
+            self._send_json({"error": "Unknown grant"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            export_id, payload = create_export(grant_id, user_id)
+        except MediaError as exc:
+            self._send_media_error(grant_id, exc)
+            return
+        self._send_bytes(payload, "application/pdf", f"atmon-log-{export_id}.pdf")
+
+    def _handle_export_download(self, export_id: str) -> None:
+        user_id = self._media_user()
+        if user_id is None:
+            return
+        try:
+            payload = fetch_export(export_id, user_id)
+        except MediaError as exc:
+            self._send_media_error(export_id, exc)
+            return
+        self._send_bytes(payload, "application/pdf", f"atmon-log-{export_id}.pdf")
+
+    def _send_bytes(self, payload: bytes, content_type: str, filename: str) -> None:
+        self._set_headers(
+            content_type=content_type,
+            extra_headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(payload)),
+            },
+        )
+        self.wfile.write(payload)
 
     # ── Auth helpers ─────────────────────────────────────────────────────────
 

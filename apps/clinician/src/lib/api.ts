@@ -126,6 +126,29 @@ export async function loadClinician(userId: string): Promise<ClinData> {
   }
 }
 
+export type StoredExport = {
+  id: string
+  childId: string
+  eventCount: number
+  methodologyVersion: string
+  createdAt: string
+}
+
+export async function loadExports(): Promise<StoredExport[]> {
+  const { data, error } = await supabase
+    .from("exports")
+    .select("id, child_id, event_count, methodology_version, created_at")
+    .order("created_at", { ascending: false })
+  if (error) throw new Error(error.message)
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    childId: row.child_id,
+    eventCount: row.event_count,
+    methodologyVersion: row.methodology_version,
+    createdAt: row.created_at,
+  }))
+}
+
 export async function judgeEvent(userId: string, eventId: string, decision: Decision, classKey: ClassKey | null): Promise<string | null> {
   const { error } = await supabase.from("event_verifications").insert({
     event_id: eventId,
