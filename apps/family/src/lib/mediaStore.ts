@@ -23,6 +23,18 @@ export async function saveVideo(sessionId: string, blob: Blob): Promise<void> {
   db.close()
 }
 
+export async function listVideoIds(): Promise<string[]> {
+  const db = await openDb()
+  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly")
+    const request = tx.objectStore(STORE).getAllKeys()
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  db.close()
+  return keys.filter((key): key is string => typeof key === "string")
+}
+
 export async function loadVideo(sessionId: string): Promise<Blob | null> {
   const db = await openDb()
   const blob = await new Promise<Blob | null>((resolve, reject) => {

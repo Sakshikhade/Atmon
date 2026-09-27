@@ -78,6 +78,7 @@ export type ClinSession = {
   preRollMs: number
   setting: string | null
   antecedentNote: string | null
+  storageLocation: "device" | "cloud"
   events: ClinEvent[]
 }
 

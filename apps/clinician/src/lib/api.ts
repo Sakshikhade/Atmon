@@ -26,7 +26,7 @@ export async function loadClinician(userId: string): Promise<ClinData> {
     childIds.length
       ? supabase.from("children").select("id, display_name").in("id", childIds)
       : Promise.resolve({ data: [], error: null }),
-    supabase.from("sessions").select("id, child_id, started_at, duration_ms, pre_roll_ms, setting, antecedent_note"),
+    supabase.from("sessions").select("id, child_id, started_at, duration_ms, pre_roll_ms, setting, antecedent_note, storage_location"),
     supabase.from("events").select("id, session_id, child_id, class_key, onset_ms, duration_ms, confidence_band, status, flagged, media_suppressed"),
     supabase.from("notes").select("event_id, body, to_family"),
     supabase.from("event_verifications").select("event_id, actor_id, actor_kind, decision, created_at").eq("actor_id", userId),
@@ -92,6 +92,7 @@ export async function loadClinician(userId: string): Promise<ClinData> {
       preRollMs: row.pre_roll_ms ?? 0,
       setting: row.setting,
       antecedentNote: row.antecedent_note,
+      storageLocation: (row.storage_location === "cloud" ? "cloud" : "device") as "cloud" | "device",
       events: (eventsBySession.get(row.id) ?? []).sort((a, b) => a.onsetMs - b.onsetMs),
     }))
     .filter((session) => openChildren.has(session.childId) || session.events.length > 0)

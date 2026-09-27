@@ -1,3 +1,4 @@
+import { listVideoIds, loadVideo } from "./mediaStore"
 import { supabase } from "./supabase"
 
 const mediaUrl = import.meta.env.VITE_MEDIA_URL || "http://localhost:8000"
@@ -20,4 +21,20 @@ export async function uploadRecording(sessionId: string, blob: Blob): Promise<st
   } catch {
     return "Saved on this phone. The cloud copy did not start."
   }
+}
+
+export async function uploadLocalRecordings(): Promise<number> {
+  const ids = await listVideoIds()
+  if (ids.length === 0) return 0
+  const { data: rows, error } = await supabase.from("sessions").select("id, storage_location").in("id", ids)
+  if (error || !rows) return 0
+  let uploaded = 0
+  for (const row of rows) {
+    if (row.storage_location === "cloud") continue
+    const blob = await loadVideo(row.id)
+    if (!blob) continue
+    const cloudError = await uploadRecording(row.id, blob)
+    if (!cloudError) uploaded += 1
+  }
+  return uploaded
 }

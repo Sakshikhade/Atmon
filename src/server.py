@@ -484,8 +484,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             code = HTTPStatus.NOT_FOUND if "not been uploaded" in str(exc) else HTTPStatus.BAD_GATEWAY
             if "Sign in" in str(exc):
                 code = HTTPStatus.UNAUTHORIZED
+            logger.info("Media play %s -> %s", session_id, exc)
             self._send_json({"error": str(exc)}, status=code)
             return
+        logger.info("Media play %s -> link", session_id)
         self._send_json({"url": url, "expires_in": 60})
 
     # ── Auth helpers ─────────────────────────────────────────────────────────

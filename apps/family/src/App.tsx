@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import type { Session } from "@supabase/supabase-js"
 import { FamilyApp, Intro, SignIn, Splash } from "./FamilyApp"
 import { flushOutbox, loadFamily } from "./lib/api"
+import { uploadLocalRecordings } from "./lib/cloudMedia"
 import type { FamilyData } from "./lib/model"
 import { supabase } from "./lib/supabase"
 
@@ -24,12 +25,27 @@ export function App() {
 
   useEffect(() => {
     if (!session) return
+    let cancel = false
     setError(null)
     flushOutbox()
       .catch(() => undefined)
       .then(() => loadFamily(session.user.id))
-      .then(setData)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load the log."))
+      .then((loaded) => {
+        if (!cancel) setData(loaded)
+        return uploadLocalRecordings().catch(() => 0)
+      })
+      .then((count) => {
+        if (cancel || !count) return
+        return loadFamily(session.user.id).then((loaded) => {
+          if (!cancel) setData(loaded)
+        })
+      })
+      .catch((err: unknown) => {
+        if (!cancel) setError(err instanceof Error ? err.message : "Could not load the log.")
+      })
+    return () => {
+      cancel = true
+    }
   }, [session])
 
   useEffect(() => {

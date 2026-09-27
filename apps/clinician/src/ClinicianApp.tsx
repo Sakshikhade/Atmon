@@ -45,6 +45,7 @@ export function ClinicianApp({
   const [askSetting, setAskSetting] = useState("Home")
   const [askMessage, setAskMessage] = useState("")
   const [clipUrl, setClipUrl] = useState<string | null>(null)
+  const [clipNote, setClipNote] = useState<string | null>(null)
 
   const events = useMemo(() => data.sessions.flatMap((session) => session.events), [data.sessions])
   const waiting = events.filter((event) => event.flagged && !event.mediaSuppressed && !event.clinicianDecision)
@@ -52,20 +53,25 @@ export function ClinicianApp({
   const event = events.find((item) => item.id === eventId) ?? null
   const session = data.sessions.find((item) => item.id === event?.sessionId) ?? null
 
+  const sessionId = session?.id ?? null
   useEffect(() => {
-    if (!session) {
+    if (!sessionId) {
       setClipUrl(null)
+      setClipNote(null)
       return
     }
     let cancel = false
     setClipUrl(null)
-    void playbackUrl(session.id).then((url) => {
-      if (!cancel) setClipUrl(url)
+    setClipNote(null)
+    void playbackUrl(sessionId).then((result) => {
+      if (cancel) return
+      setClipUrl(result.url)
+      setClipNote(result.message)
     })
     return () => {
       cancel = true
     }
-  }, [session])
+  }, [sessionId])
 
   function show(message: string) {
     setToast(message)
@@ -309,9 +315,16 @@ export function ClinicianApp({
               {event.mediaSuppressed ? (
                 "This part was removed. The frames were not kept."
               ) : clipUrl ? (
-                <video src={clipUrl} controls playsInline />
+                <video
+                  src={clipUrl}
+                  controls
+                  playsInline
+                  onLoadedMetadata={(media) => {
+                    media.currentTarget.currentTime = playAt / 1000
+                  }}
+                />
               ) : (
-                "This clip stays on the family's phone. Nothing has been uploaded."
+                clipNote ?? "Opening the clip…"
               )}
             </div>
             <p className="tiny muted mt8">{mmss(playAt / 1000)} / {mmss(session.durationMs / 1000)}</p>
