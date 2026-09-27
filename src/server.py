@@ -21,6 +21,7 @@ from src.env_config import load_environment, print_env_banner
 from src.event_storage import EventStorage
 from src.family_store import FEATURE_HOME_CAMERA_PHASE2, FamilyStore
 from src.logging_config import configure_logging, get_logger
+from src.postgres_db import connect_postgres
 
 logger = get_logger(__name__)
 
@@ -620,7 +621,16 @@ def main():
     env = load_environment()
     print_env_banner(env)
 
-    run_server(host=args.host, port=args.port, db_path=args.db_path, family_db_path=args.family_db_path)
+    pg_conn = connect_postgres()
+    try:
+        run_server(
+            host=args.host,
+            port=args.port,
+            db_path=args.db_path,
+            family_db_path=args.family_db_path,
+        )
+    finally:
+        pg_conn.close()
 
 
 if __name__ == "__main__":
