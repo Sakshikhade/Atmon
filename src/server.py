@@ -21,6 +21,7 @@ from src.env_config import load_environment, print_env_banner
 from src.event_storage import EventStorage
 from src.family_store import FEATURE_HOME_CAMERA_PHASE2, FamilyStore
 from src.logging_config import configure_logging, get_logger
+from src.media_store import MediaError, playback_url, upload_recording, user_id_from_token
 from src.postgres_db import connect_postgres
 
 logger = get_logger(__name__)
@@ -104,6 +105,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self._route_family_get(path, query_params)
             return
 
+        if path.startswith("/media/sessions/"):
+            self._handle_media_play(path[len("/media/sessions/"):])
+            return
+
         # 404 Not Found
         self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -114,6 +119,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path.rstrip("/")
         if path.startswith("/api/family/"):
             self._route_family_post(path)
+            return
+        if path.startswith("/media/sessions/"):
+            self._handle_media_upload(path[len("/media/sessions/"):])
             return
         self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
 
@@ -430,6 +438,55 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"error": "Not Found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _media_user(self) -> str | None:
+        token = self._extract_token()
+        if not token:
+            self._send_json({"error": "Sign in again"}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+        try:
+            return user_id_from_token(token)
+        except MediaError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.UNAUTHORIZED)
+            return None
+
+    def _handle_media_upload(self, session_id: str) -> None:
+        user_id = self._media_user()
+        if user_id is None:
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 80_000_000:
+            self._send_json({"error": "Recording is empty or too large"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        body = self.rfile.read(length)
+        content_type = self.headers.get("Content-Type", "video/webm").split(";")[0].strip()
+        try:
+            key = upload_recording(session_id, user_id, body, content_type or "video/webm")
+        except MediaError as exc:
+            status = HTTPStatus.FORBIDDEN if "not yours" in str(exc) else HTTPStatus.BAD_GATEWAY
+            if "not been" in str(exc) or "Unknown" in str(exc) or "empty" in str(exc):
+                status = HTTPStatus.BAD_REQUEST
+            logger.warning("Media upload failed: %s", exc)
+            self._send_json({"error": str(exc)}, status=status)
+            return
+        self._send_json({"storage_path": key}, status=HTTPStatus.CREATED)
+
+    def _handle_media_play(self, session_id: str) -> None:
+        user_id = self._media_user()
+        if user_id is None:
+            return
+        try:
+            url = playback_url(session_id, user_id)
+        except MediaError as exc:
+            code = HTTPStatus.NOT_FOUND if "not been uploaded" in str(exc) else HTTPStatus.BAD_GATEWAY
+            if "Sign in" in str(exc):
+                code = HTTPStatus.UNAUTHORIZED
+            self._send_json({"error": str(exc)}, status=code)
+            return
+        self._send_json({"url": url, "expires_in": 60})
 
     # ── Auth helpers ─────────────────────────────────────────────────────────
 

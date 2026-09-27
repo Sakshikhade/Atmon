@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { askCapture, judgeEvent, saveAntecedent, sendFamilyNote } from "./lib/api"
+import { playbackUrl } from "./lib/cloudMedia"
 import {
   CLASS_KEYS,
   CLASSES,
@@ -43,12 +44,28 @@ export function ClinicianApp({
   const [askWhat, setAskWhat] = useState(CLASSES.flap.name)
   const [askSetting, setAskSetting] = useState("Home")
   const [askMessage, setAskMessage] = useState("")
+  const [clipUrl, setClipUrl] = useState<string | null>(null)
 
   const events = useMemo(() => data.sessions.flatMap((session) => session.events), [data.sessions])
   const waiting = events.filter((event) => event.flagged && !event.mediaSuppressed && !event.clinicianDecision)
   const reviewed = events.filter((event) => event.flagged && event.clinicianDecision)
   const event = events.find((item) => item.id === eventId) ?? null
   const session = data.sessions.find((item) => item.id === event?.sessionId) ?? null
+
+  useEffect(() => {
+    if (!session) {
+      setClipUrl(null)
+      return
+    }
+    let cancel = false
+    setClipUrl(null)
+    void playbackUrl(session.id).then((url) => {
+      if (!cancel) setClipUrl(url)
+    })
+    return () => {
+      cancel = true
+    }
+  }, [session])
 
   function show(message: string) {
     setToast(message)
@@ -288,7 +305,15 @@ export function ClinicianApp({
               </div>
               <span className="badge outline">Video download {grant?.downloadAllowed ? "granted" : "not granted"}</span>
             </div>
-            <div className="player mt12">{event.mediaSuppressed ? "This part was removed. The frames were not kept." : "This clip stays on the family's phone. Nothing has been uploaded."}</div>
+            <div className="player mt12">
+              {event.mediaSuppressed ? (
+                "This part was removed. The frames were not kept."
+              ) : clipUrl ? (
+                <video src={clipUrl} controls playsInline />
+              ) : (
+                "This clip stays on the family's phone. Nothing has been uploaded."
+              )}
+            </div>
             <p className="tiny muted mt8">{mmss(playAt / 1000)} / {mmss(session.durationMs / 1000)}</p>
             <Timeline session={session} activeId={event.id} playAt={playAt} onOpen={openReview} />
             <p className="tiny muted">Playback opens on the lead-in. Hatched is the 30 seconds before.</p>

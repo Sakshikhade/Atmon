@@ -65,6 +65,7 @@ p{margin:0}
 .table tr.link{cursor:pointer}.table tr.link:hover td{background:var(--tint)}
 .review{display:grid;grid-template-columns:1fr 380px;gap:28px}
 .player{background:var(--video);color:var(--video-ink);border-radius:14px;min-height:220px;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px}
+.player video{width:100%;max-height:420px;border-radius:10px;background:#000}
 .tl{position:relative;width:100%;max-width:100%;height:36px;margin:12px 0}
 .tl .track{position:absolute;left:0;right:0;top:8px;height:12px;background:var(--tint);border-radius:6px}
 .tl .ante{position:absolute;top:8px;height:12px;max-width:calc(100% - var(--at, 0%));background:repeating-linear-gradient(135deg,transparent 0 3px,var(--mk) 3px 4px);opacity:.45}

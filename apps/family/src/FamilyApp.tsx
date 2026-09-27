@@ -16,6 +16,7 @@ import {
 } from "./lib/api"
 import { detectStub } from "./lib/detector"
 import { overlaps } from "./lib/exposure"
+import { uploadRecording } from "./lib/cloudMedia"
 import { uuidv7 } from "./lib/ids"
 import { loadVideo, saveVideo, sha256 } from "./lib/mediaStore"
 import { PhoneRecorder } from "./lib/recorder"
@@ -638,6 +639,9 @@ export function FamilyApp({
     if (error) {
       queueOutbox(payload)
       show("Saved on this phone. It will sync when you're online.")
+    } else {
+      const cloudError = await uploadRecording(id, take.blob)
+      if (cloudError) show(cloudError)
     }
     setFreshId(id)
     setSessionId(id)
