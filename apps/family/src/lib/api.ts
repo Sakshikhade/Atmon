@@ -32,7 +32,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
 
   const membersRes = await supabase
     .from("household_members")
-    .select("household_id, user_id, role, label")
+    .select("household_id, user_id, role, label, can_record")
   if (membersRes.error) throw new Error(membersRes.error.message)
   const members = membersRes.data ?? []
   const mine = members.find((row) => row.user_id === userId)
@@ -62,7 +62,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       supabase
         .from("events")
         .select(
-          "id, session_id, class_key, onset_ms, duration_ms, confidence_band, status, source, channels, flagged, corrected_class_key",
+          "id, session_id, class_key, onset_ms, duration_ms, confidence_band, status, source, channels, flagged, corrected_class_key, media_suppressed",
         )
         .eq("child_id", childId),
       supabase.from("notes").select("event_id, body"),
@@ -121,6 +121,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       flagged: row.flagged,
       note: notes.get(row.id) ?? "",
       correctedKey: row.corrected_class_key && isClassKey(row.corrected_class_key) ? row.corrected_class_key : null,
+      mediaSuppressed: row.media_suppressed === true,
     }
     const list = eventsBySession.get(row.session_id) ?? []
     list.push(event)
@@ -217,6 +218,7 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       days: retentionRes.data?.keep_days ?? 90,
     },
     retentionSaved: Boolean(retentionRes.data),
+    canRecord: mine.can_record !== false,
   }
 }
 
@@ -415,6 +417,8 @@ export type CapturePayload = {
   obscured: boolean
   events: CaptureEvent[]
   segments: CaptureSegment[]
+  suppressed: { id: string; classKey: ClassKey; startMs: number; endMs: number }[]
+  assent: { id: string; kind: "paused_by_child" | "resumed"; atMs: number }[]
 }
 
 const OUTBOX_KEY = "atmon-capture-outbox"
@@ -425,6 +429,7 @@ function alreadyThere(error: { code?: string; message: string } | null): boolean
 }
 
 export async function saveCapture(input: CapturePayload): Promise<string | null> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return "offline"
   const { data: userData } = await supabase.auth.getUser()
   const userId = userData.user?.id
   if (!userId) return "Sign in again to save this session."
@@ -477,6 +482,40 @@ export async function saveCapture(input: CapturePayload): Promise<string | null>
       })),
     )
     if (events.error && !alreadyThere(events.error)) return events.error.message
+  }
+
+  const suppressed = input.suppressed ?? []
+  const assentMarks = input.assent ?? []
+
+  if (suppressed.length > 0) {
+    const removed = await supabase.from("events").insert(
+      suppressed.map((range) => ({
+        id: range.id,
+        session_id: input.sessionId,
+        child_id: input.childId,
+        class_key: range.classKey,
+        onset_ms: range.startMs,
+        duration_ms: Math.max(1, range.endMs - range.startMs),
+        confidence_band: null,
+        source: "family",
+        channels: input.channels,
+        status: "detected",
+        media_suppressed: true,
+      })),
+    )
+    if (removed.error && !alreadyThere(removed.error)) return removed.error.message
+  }
+
+  if (assentMarks.length > 0) {
+    const assent = await supabase.from("assent_events").insert(
+      assentMarks.map((mark) => ({
+        id: mark.id,
+        session_id: input.sessionId,
+        kind: mark.kind,
+        at_ms: mark.atMs,
+      })),
+    )
+    if (assent.error && !alreadyThere(assent.error)) return assent.error.message
   }
 
   return null

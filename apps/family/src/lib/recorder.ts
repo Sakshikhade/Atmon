@@ -1,3 +1,7 @@
+import { keepSegment, type TimeRange } from "./exposure"
+
+export type AssentMark = { id: string; kind: "paused_by_child" | "resumed"; atMs: number }
+
 export type SegmentPiece = {
   seq: number
   startMs: number
@@ -12,6 +16,8 @@ export type Take = {
   durationMs: number
   segments: SegmentPiece[]
   obscured: boolean
+  removed: TimeRange[]
+  assent: AssentMark[]
 }
 
 type FaceBox = { x: number; y: number; w: number; h: number }
@@ -60,6 +66,9 @@ export class PhoneRecorder {
   private detector: FaceDetectorLike | null = null
   private didBlur = false
   private mime = "video/webm"
+  private removed: TimeRange[] = []
+  private assent: AssentMark[] = []
+  private redactUntil = 0
   private disposed = false
 
   bufferedMs(): number {
@@ -118,11 +127,15 @@ export class PhoneRecorder {
     this.takeStarted = performance.now()
     this.pausedTotal = 0
     this.pauseBegan = null
+    this.removed = []
+    this.assent = []
+    this.redactUntil = 0
     if (this.recorder?.state === "paused") this.recorder.resume()
   }
 
   pause() {
     if (!this.recorder || this.recorder.state !== "recording") return
+    this.assent.push({ id: crypto.randomUUID(), kind: "paused_by_child", atMs: this.offsetMs() })
     this.pauseBegan = performance.now()
     this.recorder.pause()
   }
@@ -131,7 +144,19 @@ export class PhoneRecorder {
     if (!this.recorder || this.recorder.state !== "paused") return
     if (this.pauseBegan !== null) this.pausedTotal += performance.now() - this.pauseBegan
     this.pauseBegan = null
+    this.assent.push({ id: crypto.randomUUID(), kind: "resumed", atMs: this.offsetMs() })
     this.recorder.resume()
+  }
+
+  removePart() {
+    const end = this.offsetMs()
+    const start = Math.max(0, end - SEGMENT_MS)
+    this.removed.push({ startMs: start, endMs: Math.max(end, start + SEGMENT_MS) })
+    this.redactUntil = performance.now() + SEGMENT_MS
+  }
+
+  private offsetMs(): number {
+    return Math.max(0, Math.round(performance.now() - this.generationStarted))
   }
 
   async stopTake(): Promise<Take | null> {
@@ -151,19 +176,24 @@ export class PhoneRecorder {
     }
     const preRollMs = Math.min(PRE_ROLL_MS, Math.max(0, Math.round(takeStarted - generationStarted)))
     const durationMs = Math.max(preRollMs + 400, Math.round(performance.now() - generationStarted - this.pausedTotal))
-    const segments: SegmentPiece[] = this.pieces.map((piece, index) => ({
+    const kept = this.pieces
+      .map((piece, index) => ({ blob: piece.blob, startMs: index * SEGMENT_MS, header: index === 0 }))
+      .filter((item) => keepSegment(item.startMs, SEGMENT_MS, this.removed, item.header))
+    const segments: SegmentPiece[] = kept.map((item, index) => ({
       seq: index,
-      startMs: index * SEGMENT_MS,
+      startMs: item.startMs,
       durationMs: SEGMENT_MS,
-      blob: piece.blob,
+      blob: item.blob,
     }))
     return {
-      blob: new Blob(blobs, { type: this.mime }),
+      blob: new Blob(kept.map((item) => item.blob), { type: this.mime }),
       mime: this.mime,
       preRollMs,
       durationMs,
       segments,
       obscured: this.obscuring && this.didBlur,
+      removed: this.removed.slice(),
+      assent: this.assent.slice(),
     }
   }
 
@@ -171,6 +201,9 @@ export class PhoneRecorder {
     this.takeStarted = null
     this.pauseBegan = null
     this.pausedTotal = 0
+    this.removed = []
+    this.assent = []
+    this.redactUntil = 0
     if (this.preview && !this.disposed) void this.startGeneration(this.preview)
   }
 
@@ -199,6 +232,12 @@ export class PhoneRecorder {
         canvas.height = height
       }
       ctx.filter = "none"
+      if (performance.now() < this.redactUntil) {
+        ctx.fillStyle = "#111827"
+        ctx.fillRect(0, 0, width, height)
+        this.raf = requestAnimationFrame(draw)
+        return
+      }
       ctx.drawImage(video, 0, 0, width, height)
       if (this.obscuring) {
         const subject = this.pickSubject(width, height)

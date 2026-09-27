@@ -111,7 +111,9 @@ svg{display:block}
 .status{height:46px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 28px 8px;font-size:13px;font-weight:700;flex:none}
 .status .rec{color:var(--danger);display:flex;align-items:center;gap:6px}
 .status .rec i{width:9px;height:9px;border-radius:50%;background:var(--danger)}
-.body{flex:1;overflow:auto;padding:8px 18px 24px}
+.body{flex:1;overflow:auto;padding:8px 18px 24px;min-height:0}
+.body:has(.rec-screen){display:flex;flex-direction:column;padding:0;overflow:hidden}
+.rec-stage{flex:1;min-height:240px;position:relative;margin:16px 0;border-radius:16px;overflow:hidden;background:#1F2937}
 .body::-webkit-scrollbar{width:0}
 .tabs{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);background:var(--surface);padding:10px 8px 22px;flex:none}
 .tabs button{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:12px;font-weight:500;color:var(--muted);padding:4px;text-align:center}
@@ -143,7 +145,7 @@ svg{display:block}
 .group-h{display:flex;align-items:baseline;justify-content:space-between;margin:14px 2px 6px}
 .group-h .t{font-weight:600;font-size:14px}
 .group-h .s{font-size:12px;color:var(--muted)}
-.rec-screen{flex:1;display:flex;flex-direction:column;background:#0F172A;color:#F9FAFB;margin:-8px -18px -24px;padding:18px 20px 26px}
+.rec-screen{flex:1;min-height:0;display:flex;flex-direction:column;background:#0F172A;color:#F9FAFB;margin:0;padding:18px 20px 26px}
 .big-stop{width:76px;height:76px;border-radius:50%;background:var(--danger);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 8px rgba(217,54,54,.25)}
 .big-stop i{width:26px;height:26px;background:#fff;border-radius:6px}
 .ghost{background:rgba(255,255,255,.12);color:#F9FAFB;border:0}
@@ -445,4 +447,4 @@ html,body,#root{min-height:100%}
 #root{background:var(--bg)}
 .signin{max-width:420px;margin:0 auto;padding:48px 24px 80px}
 .signin .btn{margin-top:8px}
-.player .scene-fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:14px;color:var(--video-ink)}
+.player .scene-fallback{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:14px;color:var(--video-ink);background:#111827}

@@ -32,6 +32,19 @@ export function App() {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load the log."))
   }, [session])
 
+  useEffect(() => {
+    if (!session) return
+    const sync = () => {
+      void flushOutbox()
+        .catch(() => undefined)
+        .then(() => loadFamily(session.user.id))
+        .then(setData)
+        .catch(() => undefined)
+    }
+    window.addEventListener("online", sync)
+    return () => window.removeEventListener("online", sync)
+  }, [session])
+
   const reload = useCallback(async () => {
     const { data: auth } = await supabase.auth.getUser()
     if (!auth.user) return

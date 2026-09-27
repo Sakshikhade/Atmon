@@ -15,6 +15,7 @@ export type FamilyEvent = {
   flagged: boolean
   note: string
   correctedKey: ClassKey | null
+  mediaSuppressed: boolean
 }
 
 export type FamilySession = {
@@ -75,6 +76,7 @@ export type FamilyData = {
   consents: Record<ConsentKey, boolean>
   retention: { where: "device" | "cloud"; days: number }
   retentionSaved: boolean
+  canRecord: boolean
 }
 
 export type ConsentKey = "backup" | "recordings" | "corrections" | "analytics"

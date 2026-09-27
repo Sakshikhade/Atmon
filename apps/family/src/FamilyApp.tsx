@@ -14,6 +14,7 @@ import {
   verifyEvent,
 } from "./lib/api"
 import { detectStub } from "./lib/detector"
+import { overlaps } from "./lib/exposure"
 import { uuidv7 } from "./lib/ids"
 import { loadVideo, saveVideo, sha256 } from "./lib/mediaStore"
 import { PhoneRecorder } from "./lib/recorder"
@@ -113,7 +114,7 @@ function Timeline({
       {session.preRollMs > 0 ? (
         <span className="ante" style={{ ["--mk" as string]: "var(--muted)", left: pct(0), width: pct(session.preRollMs) }} />
       ) : null}
-      {session.events.map((event) => {
+      {session.events.filter((event) => !event.mediaSuppressed).map((event) => {
         const lead = Math.max(0, event.onsetMs - LEAD_MS)
         const excluded = event.status === "rejected"
         return (
@@ -461,7 +462,7 @@ export function FamilyApp({
   const [freshId, setFreshId] = useState<string | null>(null)
   const [hasVideo, setHasVideo] = useState(false)
   const [saving, setSaving] = useState(false)
-  const capturing = screen === "home" || screen === "recording"
+  const capturing = data.canRecord && (screen === "home" || screen === "recording")
   const capture = useCapture(capturing)
 
   const session = data.sessions.find((item) => item.id === sessionId) ?? data.sessions[0]
@@ -539,6 +540,10 @@ export function FamilyApp({
   }
 
   function beginRecording() {
+    if (!data.canRecord) {
+      show("You don't have permission to record in this household.")
+      return
+    }
     const recorder = capture.engine.current
     if (!recorder || capture.cameraError || !capture.stream) {
       show(capture.cameraError ?? "Camera is still starting.")
@@ -581,6 +586,13 @@ export function FamilyApp({
         sha256: await sha256(piece.blob),
       })
     }
+    const marker = data.tracked[0]?.key ?? "flap"
+    const detected = detectStub(
+      id,
+      take.durationMs,
+      take.preRollMs,
+      data.tracked.map((item) => item.key),
+    ).filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
     const payload = {
       sessionId: id,
       childId: data.childId,
@@ -590,8 +602,15 @@ export function FamilyApp({
       preRollMs: take.preRollMs,
       channels: (audioOn ? "both" : "video") as "both" | "video",
       obscured: take.obscured,
-      events: detectStub(id, take.durationMs, take.preRollMs, data.tracked.map((item) => item.key)),
+      events: detected,
       segments,
+      suppressed: take.removed.map((range) => ({
+        id: uuidv7(),
+        classKey: marker,
+        startMs: range.startMs,
+        endMs: range.endMs,
+      })),
+      assent: take.assent,
     }
     const error = await saveCapture(payload)
     if (error) {
@@ -618,7 +637,7 @@ export function FamilyApp({
       return
     }
     await reload()
-    const remaining = (session?.events ?? []).filter((item) => item.id !== event.id && item.status === "detected")
+    const remaining = (session?.events ?? []).filter((item) => !item.mediaSuppressed && item.id !== event.id && item.status === "detected")
     if (checkRun && remaining.length) {
       openEvent(remaining[0].id)
       setCheckRun(true)
@@ -635,6 +654,15 @@ export function FamilyApp({
   }
 
   function EventRow({ item, parent }: { item: FamilyEvent; parent: FamilySession }) {
+    if (item.mediaSuppressed) {
+      return (
+        <button className="ev-item" type="button" onClick={() => openEvent(item.id, parent.id)}>
+          <span className="title">This part was removed</span>
+          <span className="meta">{mmss(item.onsetMs / 1000)}, {durWord(item.durationMs / 1000)}</span>
+          <span className="badge">Not kept</span>
+        </button>
+      )
+    }
     const meta = eventMeta(item, targetFor(item.classKey))
     return (
       <button className="ev-item" type="button" onClick={() => openEvent(item.id, parent.id)}>
@@ -655,9 +683,9 @@ export function FamilyApp({
   }
 
   function SessionCard({ item }: { item: FamilySession }) {
-    const live = item.events.filter((eventItem) => eventItem.status !== "rejected").length
-    const unchecked = item.events.filter((eventItem) => eventItem.status === "detected").length
-    const flagged = item.events.filter((eventItem) => eventItem.flagged).length
+    const live = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status !== "rejected").length
+    const unchecked = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected").length
+    const flagged = item.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.flagged).length
     return (
       <button className="sess-card" type="button" onClick={() => openSession(item.id)}>
         <div className="between">
@@ -676,8 +704,8 @@ export function FamilyApp({
   }
 
   const ask = data.asks[0]
-  const toCheck = data.sessions.find((item) => item.events.some((eventItem) => eventItem.status === "detected"))
-  const uncheckedCount = toCheck?.events.filter((eventItem) => eventItem.status === "detected").length ?? 0
+  const toCheck = data.sessions.find((item) => item.events.some((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected"))
+  const uncheckedCount = toCheck?.events.filter((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected").length ?? 0
 
   let body: ReactNode = null
 
@@ -686,7 +714,7 @@ export function FamilyApp({
       <>
         <h1 className="h1">{data.childName}</h1>
         <p className="muted mt4">Nothing is shared unless you share it.</p>
-        <button className="home-start mt16" type="button" onClick={beginRecording}>
+        <button className="home-start mt16" type="button" disabled={!data.canRecord} style={!data.canRecord ? { opacity: 0.45 } : undefined} onClick={beginRecording}>
           <span className="ring"><i /></span>
           <span>
             <span className="t">Record now</span>
@@ -694,13 +722,15 @@ export function FamilyApp({
           </span>
         </button>
         <p className="tiny muted mt8">
-          {capture.cameraError
-            ? capture.cameraError
-            : capture.stream
-              ? capture.readyMs >= 28000
-                ? "Camera is on. 30 seconds from before you tap are ready."
-                : "Camera is on. The lead-in is still filling."
-              : "Turning the camera on so the lead-in can start."}
+          {!data.canRecord
+            ? "You don't have permission to record in this household."
+            : capture.cameraError
+              ? capture.cameraError
+              : capture.stream
+                ? capture.readyMs >= 28000
+                  ? "Camera is on. 30 seconds from before you tap are ready."
+                  : "Camera is on. The lead-in is still filling."
+                : "Turning the camera on so the lead-in can start."}
         </p>
         {ask ? (
           <div className="card mt12">
@@ -710,14 +740,14 @@ export function FamilyApp({
             </div>
             <p className="small mt8">{ask.what}{ask.setting ? `, ${ask.setting}` : ""}.</p>
             <div className="row mt12">
-              <button className="btn sm" type="button" onClick={beginRecording}>Record one</button>
+              <button className="btn sm" type="button" disabled={!data.canRecord} onClick={beginRecording}>Record one</button>
               <button className="btn sm quiet" type="button" onClick={() => { void declineAsk(ask.id).then((error) => afterWrite(error, "Dismissed. They aren't told why.")) }}>Not this week</button>
             </div>
           </div>
         ) : null}
         {toCheck && uncheckedCount ? (
           <button className="card mt12" style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }} type="button" onClick={() => {
-            const next = toCheck.events.find((eventItem) => eventItem.status === "detected")
+            const next = toCheck.events.find((eventItem) => !eventItem.mediaSuppressed && eventItem.status === "detected")
             if (!next) return
             setCheckRun(true)
             openEvent(next.id, toCheck.id)
@@ -747,7 +777,7 @@ export function FamilyApp({
           <span className={`badge ${paused ? "warn" : "danger"}`}>{paused ? "Paused" : "Recording"}</span>
           <span className="tabnum" style={{ fontSize: 22, fontWeight: 700 }}>{mmss(timer)}</span>
         </div>
-        <div style={{ flex: 1, position: "relative", margin: "16px 0", borderRadius: 16, overflow: "hidden", background: "#1F2937" }}>
+        <div className="rec-stage">
           <LivePreview stream={capture.stream} onSubject={(x, y) => capture.engine.current?.setSubject(x, y)} />
           <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{data.childName}</span>
@@ -769,7 +799,10 @@ export function FamilyApp({
         </div>
         <div className="between mt16">
           <p className="tiny" style={{ opacity: 0.7 }}>If {data.childName} shows he'd rather not, stop. His response governs.</p>
-          <button className="btn sm ghost" type="button" onClick={() => setSheet("options")}>Options</button>
+          <span className="row">
+            <button className="btn sm ghost" type="button" onClick={() => { capture.engine.current?.removePart(); show("That part will not be kept.") }}>Remove this part</button>
+            <button className="btn sm ghost" type="button" onClick={() => setSheet("options")}>Options</button>
+          </span>
         </div>
       </div>
     )
@@ -846,8 +879,8 @@ export function FamilyApp({
   }
 
   if (screen === "session" && session) {
-    const live = session.events.filter((item) => item.status !== "rejected").length
-    const unchecked = session.events.filter((item) => item.status === "detected").length
+    const live = session.events.filter((item) => !item.mediaSuppressed && item.status !== "rejected").length
+    const unchecked = session.events.filter((item) => !item.mediaSuppressed && item.status === "detected").length
     body = (
       <>
         <button className="btn quiet" type="button" onClick={() => go("log")}>‹ Sessions</button>
@@ -874,7 +907,7 @@ export function FamilyApp({
         </div>
         {unchecked ? (
           <button className="btn mt16" type="button" onClick={() => {
-            const next = session.events.find((item) => item.status === "detected")
+            const next = session.events.find((item) => !item.mediaSuppressed && item.status === "detected")
             if (!next) return
             setCheckRun(true)
             openEvent(next.id)
@@ -891,7 +924,7 @@ export function FamilyApp({
   }
 
   if (screen === "event" && session && event) {
-    const left = session.events.filter((item) => item.status === "detected").length
+    const left = session.events.filter((item) => !item.mediaSuppressed && item.status === "detected").length
     const shownKey = event.correctedKey ?? event.classKey
     body = (
       <>
@@ -901,15 +934,17 @@ export function FamilyApp({
             <span className="row">
               <span className="badge primary">{left} left</span>
               <button className="btn quiet sm" type="button" onClick={() => {
-                const next = session.events.find((item) => item.status === "detected" && item.id !== event.id)
+                const next = session.events.find((item) => !item.mediaSuppressed && item.status === "detected" && item.id !== event.id)
                 if (next) openEvent(next.id)
                 else { setCheckRun(false); go("session") }
               }}>Skip</button>
             </span>
           ) : null}
         </div>
-        <div className="row mt8"><Dot classKey={shownKey} /><h1 className="h2">{CLASSES[shownKey].name}</h1></div>
-        <p className="muted small mt4">{kindLabel(shownKey, targetFor(shownKey))}. From {mmss(event.onsetMs / 1000)}, {durWord(event.durationMs / 1000)}.</p>
+        <div className="row mt8">
+          {event.mediaSuppressed ? <h1 className="h2">This part was removed</h1> : <><Dot classKey={shownKey} /><h1 className="h2">{CLASSES[shownKey].name}</h1></>}
+        </div>
+        <p className="muted small mt4">{event.mediaSuppressed ? "The frames were not kept." : `${kindLabel(shownKey, targetFor(shownKey))}.`} From {mmss(event.onsetMs / 1000)}, {durWord(event.durationMs / 1000)}.</p>
         <div className="player mt12">
           <SessionVideo
             sessionId={session.id}
@@ -924,6 +959,9 @@ export function FamilyApp({
           />
           <div className="ov"><span className="badge">{session.obscured ? "Other faces obscured" : "No other faces obscured"}</span></div>
           {playAt < session.preRollMs ? <div className="ante-lbl">Before you tapped</div> : null}
+          {session.events.some((item) => item.mediaSuppressed && playAt >= item.onsetMs && playAt < item.onsetMs + item.durationMs) ? (
+            <div className="scene-fallback">This part was removed. The frames were not kept.</div>
+          ) : null}
           <div className="tc">{mmss(playAt / 1000)} / {mmss(session.durationMs / 1000)}</div>
         </div>
         <input className="scrub" type="range" min={0} max={session.durationMs} step={250} value={playAt} aria-label="Scrub through the recording" onChange={(input) => setPlayAt(Number(input.target.value))} />
@@ -936,6 +974,10 @@ export function FamilyApp({
           </div>
         </div>
         <Timeline session={session} activeId={event.id} dense playhead={playAt} onOpen={(id) => openEvent(id)} />
+        {event.mediaSuppressed ? (
+          <p className="small mt12">Nothing from this stretch was kept on the phone, and it is not counted as a behaviour.</p>
+        ) : (
+          <>
         <div className="card flat mt12">
           <div className="between mb8">
             <span className="semi">Is this right?</span>
@@ -956,6 +998,8 @@ export function FamilyApp({
         </div>
         {event.note ? <div className="tintbox small mt8">{event.note}</div> : null}
         <button className="btn secondary mt12" type="button" onClick={() => { setShareFrom("event"); setShareScope("clip"); setShareGrantId(primary?.id ?? null); go("share") }}>Share this clip</button>
+          </>
+        )}
         <p className="tiny muted mt12" style={{ textAlign: "center" }}>{checkRun ? "Answering moves you to the next one." : "Answering takes you back to the session."}</p>
       </>
     )
@@ -963,7 +1007,7 @@ export function FamilyApp({
 
   if (screen === "share" && session) {
     const fromEvent = shareFrom === "event" && event
-    const flagged = session.events.filter((item) => item.flagged)
+    const flagged = session.events.filter((item) => item.flagged && !item.mediaSuppressed)
     const back = fromEvent ? "event" : "session"
     body = (
       <>
@@ -1036,7 +1080,7 @@ export function FamilyApp({
               onClick={() => {
                 const grant = openGrants.find((item) => item.id === shareGrantId) ?? openGrants[0]
                 if (!grant) return
-                const chosen = fromEvent ? [event] : shareScope === "clip" ? flagged : session.events.filter((item) => item.status !== "rejected")
+                const chosen = fromEvent ? [event] : shareScope === "clip" ? flagged : session.events.filter((item) => !item.mediaSuppressed && item.status !== "rejected")
                 const expires = shareExpiry === "custom" && expiryDate
                   ? new Date(`${expiryDate}T23:59:59`).toISOString()
                   : new Date(Date.now() + Number(shareExpiry) * 86400000).toISOString()
@@ -1114,7 +1158,7 @@ export function FamilyApp({
   }
 
   if (screen === "log") {
-    const rows = data.sessions.flatMap((item) => item.events.filter((eventItem) => eventItem.status !== "rejected").map((eventItem) => ({ session: item, event: eventItem }))).filter((row) => logFilter === "all" || row.event.classKey === logFilter)
+    const rows = data.sessions.flatMap((item) => item.events.filter((eventItem) => eventItem.status !== "rejected").map((eventItem) => ({ session: item, event: eventItem }))).filter((row) => (row.event.mediaSuppressed ? logFilter === "all" : logFilter === "all" || row.event.classKey === logFilter))
     body = (
       <>
         <div className="between">
@@ -1162,7 +1206,7 @@ export function FamilyApp({
     const bySetting = new Map<string, Map<ClassKey, number>>()
     for (const item of data.sessions) {
       for (const eventItem of item.events) {
-        if (eventItem.status === "rejected") continue
+        if (eventItem.mediaSuppressed || eventItem.status === "rejected") continue
         counts.set(eventItem.classKey, (counts.get(eventItem.classKey) ?? 0) + 1)
         const bucket = bySetting.get(settingLabel(item.setting)) ?? new Map()
         bucket.set(eventItem.classKey, (bucket.get(eventItem.classKey) ?? 0) + 1)
