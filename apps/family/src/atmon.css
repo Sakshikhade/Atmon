@@ -160,10 +160,10 @@ svg{display:block}
 .bar .n{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* Timeline (shared) */
-.tl{position:relative;height:46px;margin:8px 0}
+.tl{position:relative;width:100%;max-width:100%;height:46px;margin:8px 0}
 .tl .track{position:absolute;left:0;right:0;top:14px;height:12px;background:var(--tint);border-radius:6px}
-.tl .ante{position:absolute;top:14px;height:12px;background:repeating-linear-gradient(135deg,transparent 0 3px,var(--mk) 3px 4px);opacity:.35;border-radius:6px 0 0 6px}
-.tl .ev{position:absolute;top:14px;height:12px;border-radius:6px;background:var(--mk);min-width:8px;cursor:pointer;display:block;opacity:.85}
+.tl .ante{position:absolute;top:14px;height:12px;max-width:calc(100% - var(--at, 0%));background:repeating-linear-gradient(135deg,transparent 0 3px,var(--mk) 3px 4px);opacity:.35;border-radius:6px 0 0 6px}
+.tl .ev{position:absolute;top:14px;height:12px;border-radius:6px;background:var(--mk);min-width:min(8px, calc(100% - var(--at, 0%)));max-width:calc(100% - var(--at, 0%));cursor:pointer;display:block;opacity:.85}
 .tl .ev.on{opacity:1;box-shadow:inset 0 0 0 2px var(--ink)}
 .tl .ev.excluded{background:transparent;border:1.5px dashed var(--muted);opacity:.6}
 .tl .head{position:absolute;top:8px;width:2px;height:24px;background:var(--ink);border-radius:1px;pointer-events:none}

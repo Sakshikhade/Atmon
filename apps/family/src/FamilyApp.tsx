@@ -92,6 +92,20 @@ function Dot({ classKey }: { classKey: ClassKey }) {
   return <span className="dot" style={{ background: CLASSES[classKey].color }} />
 }
 
+function mark(startMs: number, lengthMs: number, totalMs: number, color: string) {
+  const total = Math.max(totalMs, 1)
+  const start = Math.min(Math.max(0, startMs), total)
+  const end = Math.min(total, Math.max(start, start + lengthMs))
+  const left = (start / total) * 100
+  const width = ((end - start) / total) * 100
+  return {
+    ["--mk" as string]: color,
+    ["--at" as string]: `${left.toFixed(2)}%`,
+    left: `${left.toFixed(2)}%`,
+    width: `${width.toFixed(2)}%`,
+  }
+}
+
 function Timeline({
   session,
   activeId,
@@ -107,24 +121,28 @@ function Timeline({
   playhead?: number
   onOpen?: (id: string) => void
 }) {
-  const pct = (ms: number) => `${((ms / Math.max(session.durationMs, 1)) * 100).toFixed(2)}%`
+  const pin = (ms: number) => {
+    const total = Math.max(session.durationMs, 1)
+    const left = (Math.min(Math.max(0, ms), total) / total) * 100
+    return `min(${left.toFixed(2)}%, calc(100% - 2px))`
+  }
   return (
     <div className={`tl${dense ? " dense" : ""}${inert ? " inert" : ""}`}>
       <div className="track" />
       {session.preRollMs > 0 ? (
-        <span className="ante" style={{ ["--mk" as string]: "var(--muted)", left: pct(0), width: pct(session.preRollMs) }} />
+        <span className="ante" style={mark(0, session.preRollMs, session.durationMs, "var(--muted)")} />
       ) : null}
       {session.events.filter((event) => !event.mediaSuppressed).map((event) => {
         const lead = Math.max(0, event.onsetMs - LEAD_MS)
         const excluded = event.status === "rejected"
         return (
           <span key={event.id}>
-            <span className="ante" style={{ ["--mk" as string]: CLASSES[event.classKey].color, left: pct(lead), width: pct(event.onsetMs - lead) }} />
+            <span className="ante" style={mark(lead, event.onsetMs - lead, session.durationMs, CLASSES[event.classKey].color)} />
             <span
               className={`ev${event.id === activeId ? " on" : ""}${excluded ? " excluded" : ""}`}
               role={inert ? undefined : "button"}
               tabIndex={inert ? undefined : 0}
-              style={{ ["--mk" as string]: CLASSES[event.classKey].color, left: pct(event.onsetMs), width: pct(Math.max(event.durationMs, 400)) }}
+              style={mark(event.onsetMs, event.durationMs, session.durationMs, CLASSES[event.classKey].color)}
               aria-label={inert ? undefined : `${CLASSES[event.classKey].name} at ${mmss(event.onsetMs / 1000)}`}
               onClick={inert ? undefined : () => onOpen?.(event.id)}
               onKeyDown={
@@ -141,7 +159,7 @@ function Timeline({
           </span>
         )
       })}
-      {!inert && playhead !== undefined ? <div className="head" style={{ left: pct(playhead) }} /> : null}
+      {!inert && playhead !== undefined ? <div className="head" style={{ left: pin(playhead) }} /> : null}
       {!dense ? (
         <>
           <span className="lbl" style={{ left: 0 }}>0:00</span>

@@ -502,17 +502,32 @@ function Dot({ classKey }: { classKey: ClassKey }) {
 }
 
 function Timeline({ session, activeId, playAt, onOpen }: { session: ClinSession; activeId?: string; playAt: number; onOpen: (event: ClinEvent) => void }) {
-  const pct = (ms: number) => `${((ms / Math.max(session.durationMs, 1)) * 100).toFixed(2)}%`
+  const total = Math.max(session.durationMs, 1)
+  const pin = (ms: number) => `min(${((Math.min(Math.max(0, ms), total) / total) * 100).toFixed(2)}%, calc(100% - 2px))`
   return (
     <div className="tl">
       <div className="track" />
-      {session.preRollMs > 0 ? <span className="ante" style={{ ["--mk" as string]: "var(--muted)", left: 0, width: pct(session.preRollMs) }} /> : null}
+      {session.preRollMs > 0 ? <span className="ante" style={mark(0, session.preRollMs, session.durationMs, "var(--muted)")} /> : null}
       {session.events.filter((item) => !item.mediaSuppressed).map((item) => (
-        <button key={item.id} className="ev" type="button" aria-label={CLASSES[item.classKey].name} style={{ ["--mk" as string]: CLASSES[item.classKey].color, left: pct(item.onsetMs), width: pct(Math.max(item.durationMs, 400)), outline: item.id === activeId ? "2px solid var(--ink)" : undefined }} onClick={() => onOpen(item)} />
+        <button key={item.id} className="ev" type="button" aria-label={CLASSES[item.classKey].name} style={{ ...mark(item.onsetMs, item.durationMs, session.durationMs, CLASSES[item.classKey].color), boxShadow: item.id === activeId ? "inset 0 0 0 2px var(--ink)" : undefined }} onClick={() => onOpen(item)} />
       ))}
-      <div className="head" style={{ left: pct(playAt) }} />
+      <div className="head" style={{ left: pin(playAt) }} />
     </div>
   )
+}
+
+function mark(startMs: number, lengthMs: number, totalMs: number, color: string) {
+  const total = Math.max(totalMs, 1)
+  const start = Math.min(Math.max(0, startMs), total)
+  const end = Math.min(total, Math.max(start, start + lengthMs))
+  const left = (start / total) * 100
+  const width = ((end - start) / total) * 100
+  return {
+    ["--mk" as string]: color,
+    ["--at" as string]: `${left.toFixed(2)}%`,
+    left: `${left.toFixed(2)}%`,
+    width: `${width.toFixed(2)}%`,
+  }
 }
 
 function childName(data: ClinData, childId: string): string {
