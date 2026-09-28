@@ -284,10 +284,8 @@ export function Splash({ onDone }: { onDone: () => void }) {
   }, [onDone])
 
   return (
-    <div className="phone-wrap">
-      <div className="phone">
-        <div className="screen">
-          <div className="psplash" aria-label="ATMON">
+    <div className="app-shell splash-shell">
+      <div className="psplash" aria-label="ATMON">
             <svg viewBox="0 0 64 64">
               <rect className="line" x="12" y="38" width="40" height="5" rx="2.5" fill="#fff" opacity=".45" />
               <rect className="lead" x="12" y="38" width="20" height="5" rx="2.5" fill="#fff" opacity=".9" />
@@ -295,8 +293,6 @@ export function Splash({ onDone }: { onDone: () => void }) {
             </svg>
             <div className="word">atmon</div>
             <div className="tag">Record the moment.</div>
-          </div>
-        </div>
       </div>
     </div>
   )
@@ -305,7 +301,6 @@ export function Splash({ onDone }: { onDone: () => void }) {
 function useCapture(active: boolean) {
   const engine = useRef<PhoneRecorder | null>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
-  const [readyMs, setReadyMs] = useState(0)
   const [cameraError, setCameraError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -326,17 +321,15 @@ function useCapture(active: boolean) {
       setCameraError(name === "NotAllowedError" ? "Camera is blocked. Allow it to record." : "This browser has no camera.")
       setStream(null)
     })
-    const tick = window.setInterval(() => setReadyMs(recorder.bufferedMs()), 500)
     return () => {
       stop = true
-      window.clearInterval(tick)
       recorder.dispose()
       if (engine.current === recorder) engine.current = null
       setStream(null)
     }
   }, [active])
 
-  return { engine, stream, readyMs, cameraError }
+  return { engine, stream, cameraError }
 }
 
 function LivePreview({
@@ -485,7 +478,7 @@ export function FamilyApp({
   const [freshId, setFreshId] = useState<string | null>(null)
   const [hasVideo, setHasVideo] = useState(false)
   const [saving, setSaving] = useState(false)
-  const capturing = data.canRecord && (screen === "home" || screen === "recording")
+  const capturing = screen === "recording"
   const capture = useCapture(capturing)
 
   const session = data.sessions.find((item) => item.id === sessionId) ?? data.sessions[0]
@@ -567,19 +560,26 @@ export function FamilyApp({
       show("You don't have permission to record in this household.")
       return
     }
-    const recorder = capture.engine.current
-    if (!recorder || capture.cameraError || !capture.stream) {
-      show(capture.cameraError ?? "Camera is still starting.")
-      return
-    }
-    recorder.setObscuring(obscuring)
-    recorder.setAudio(audioOn)
-    recorder.startTake()
     setTimer(0)
     setPaused(false)
     setFreshId(null)
     go("recording")
   }
+
+  const takeStream = useRef<MediaStream | null>(null)
+  useEffect(() => {
+    if (screen !== "recording") {
+      takeStream.current = null
+      return
+    }
+    const recorder = capture.engine.current
+    if (!recorder || !capture.stream) return
+    recorder.setObscuring(obscuring)
+    recorder.setAudio(audioOn)
+    if (takeStream.current === capture.stream) return
+    takeStream.current = capture.stream
+    recorder.startTake()
+  }, [screen, capture.stream, obscuring, audioOn])
 
   async function finishRecording() {
     const recorder = capture.engine.current
@@ -749,15 +749,9 @@ export function FamilyApp({
           </span>
         </button>
         <p className="tiny muted mt8">
-          {!data.canRecord
-            ? "You don't have permission to record in this household."
-            : capture.cameraError
-              ? capture.cameraError
-              : capture.stream
-                ? capture.readyMs >= 28000
-                  ? "Camera is on. 30 seconds from before you tap are ready."
-                  : "Camera is on. The lead-in is still filling."
-                : "Turning the camera on so the lead-in can start."}
+          {data.canRecord
+            ? "The camera stays off until you tap Record now."
+            : "You don't have permission to record in this household."}
         </p>
         {ask ? (
           <div className="card mt12">
@@ -805,13 +799,19 @@ export function FamilyApp({
           <span className="tabnum" style={{ fontSize: 22, fontWeight: 700 }}>{mmss(timer)}</span>
         </div>
         <div className="rec-stage">
-          <LivePreview stream={capture.stream} onSubject={(x, y) => capture.engine.current?.setSubject(x, y)} />
+          {capture.cameraError ? (
+            <div className="scene-fallback">{capture.cameraError}</div>
+          ) : capture.stream ? (
+            <LivePreview stream={capture.stream} onSubject={(x, y) => capture.engine.current?.setSubject(x, y)} />
+          ) : (
+            <div className="scene-fallback">Turning the camera on.</div>
+          )}
           <div style={{ position: "absolute", left: 12, top: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{data.childName}</span>
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{obscuring ? (capture.engine.current?.blurred() ? "Other faces obscured" : "Obscuring on") : "Obscuring off"}</span>
             {!audioOn ? <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>Muted</span> : null}
           </div>
-          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>Holding the 30s before you tapped. Tap a face to mark who this is about.</div>
+          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>The camera started when you tapped Record now. Tap a face to mark who this is about.</div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>
           <button className="btn sm ghost" type="button" onClick={() => setSheet("discard")}>Discard</button>
@@ -1652,22 +1652,8 @@ export function FamilyApp({
     </>
   )
 
-  const clock = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-
   return (
-    <div className="phone-wrap">
-      <div className="phone">
-        <div className="screen">
-          <div className="island" />
-          <div className="status">
-            <span>{clock}</span>
-            {screen === "recording" ? (
-              <span className="rec" style={paused ? { color: "var(--warn)" } : undefined}>
-                <i style={paused ? { background: "var(--warn)" } : undefined} />
-                {paused ? "Paused" : "Recording"}
-              </span>
-            ) : null}
-          </div>
+    <div className="app-shell">
           <div className="body">{body}</div>
           {HIDDEN_TABS.has(screen) ? null : (
             <div className="tabs">
@@ -1679,8 +1665,6 @@ export function FamilyApp({
           )}
           {toast ? <div className="toast">{toast}</div> : null}
           {sheetNode}
-        </div>
-      </div>
     </div>
   )
 }
