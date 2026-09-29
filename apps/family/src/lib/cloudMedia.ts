@@ -1,9 +1,11 @@
 import { listVideoIds, loadVideo } from "./mediaStore"
 import { supabase } from "./supabase"
 
-const mediaUrl = import.meta.env.VITE_MEDIA_URL || "http://localhost:8000"
+/** Optional legacy media host. Leave unset — family video stays on-device (IndexedDB). */
+const mediaUrl = (import.meta.env.VITE_MEDIA_URL || "").replace(/\/$/, "")
 
 export async function uploadRecording(sessionId: string, blob: Blob): Promise<string | null> {
+  if (!mediaUrl) return null
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
   if (!token) return "Sign in again before the cloud copy."
@@ -24,6 +26,7 @@ export async function uploadRecording(sessionId: string, blob: Blob): Promise<st
 }
 
 export async function uploadLocalRecordings(): Promise<number> {
+  if (!mediaUrl) return 0
   const ids = await listVideoIds()
   if (ids.length === 0) return 0
   const { data: rows, error } = await supabase.from("sessions").select("id, storage_location").in("id", ids)

@@ -1,17 +1,40 @@
-# ATMON / AAMAS (atmos-proj)
+# ATMON (atmos-proj)
 
-Privacy-first autism activity monitoring: a **family capture app**, **clinician review app**, local **Python edge monitor**, and a **few-shot action detector** (X-CLIP prototypes) wired for post-capture scoring.
+Privacy-first autism activity monitoring for families and clinicians.
 
-Primary product loop: family records on device → local `action_detection` scores the clip → events sync to Supabase → family verifies / flags → clinician reviews shared clips.
+**Product loop**
+
+1. Family records a take in the handheld app (video stays on-device in IndexedDB).
+2. On stop, the clip is scored by the local **action_detection** service (X-CLIP few-shot prototypes on port **8010**).
+3. Events sync to **Supabase**; the family verifies / flags what to share.
+4. The clinician app reviews only what a family has granted.
+
+Do **not** run `python -m src.server` for this flow. That edge-dashboard path is legacy and is not part of family/clinician detection.
 
 ---
 
-## Executive Summary
+## Architecture
 
-- **Family + clinician web apps** (`apps/family`, `apps/clinician`) — Vite/React, Supabase Auth, local IndexedDB video, optional Backblaze media.
-- **Post-capture detection** — after `stopTake`, the family app POSTs the recording to the `action_detection` service (`POST /api/detect/video` on port **8010**). Classes: `ear_cover`, `hair_twirling`, `head_nodding`.
-- **Local edge monitor** — optional OpenCV + MediaPipe pipeline (`src/main.py`, `src.ingest`) for live/offline skeleton heuristics or RF ML, with dashboard replay (`src.server` on **8000**).
-- **Privacy** — family video stays on-device by default; detector service is loopback-only; EdgeFace identity (in `action_detection`) is a session gate with a non-commercial licence (CC BY-NC-SA 4.0).
+```text
+┌─────────────────┐     POST /api/detect/video      ┌──────────────────────┐
+│  Family Vite    │ ──────────────────────────────► │  action_detection    │
+│  :5173          │                                 │  FastAPI :8010       │
+│                 │ ◄──────── events JSON ───────── │  X-CLIP + prototypes  │
+└────────┬────────┘                                 └──────────────────────┘
+         │ saveCapture / flag / share
+         ▼
+┌─────────────────┐     share_grants + events       ┌─────────────────┐
+│  Supabase       │ ──────────────────────────────► │ Clinician Vite  │
+│  Auth + DB      │                                 │ :5180           │
+└─────────────────┘                                 └─────────────────┘
+```
+
+| Layer | Role |
+| :--- | :--- |
+| `apps/family` | Capture, local video, post-capture detect call, verify/flag/share |
+| `action_detection/` | Few-shot X-CLIP scoring (`POST /api/detect/video`) |
+| Supabase | Auth, sessions, events, share grants |
+| `apps/clinician` | Review flagged/shared events (does **not** call `:8010`) |
 
 ---
 
@@ -19,161 +42,110 @@ Primary product loop: family records on device → local `action_detection` scor
 
 | Service | Port | Command |
 | :--- | :--- | :--- |
-| Atmos API / media / static dashboards | `8000` | `python -m src.server --port 8000` |
-| Action detection (X-CLIP) | `8010` | `cd action_detection && python webapp/server.py` |
-| Family Vite app | `5173` | `cd apps/family && npm run dev` |
-| Clinician Vite app | `5180` | `cd apps/clinician && npm run dev` |
-| Webhook mock (optional) | `5001` | `python mock_server.py` |
+| Action detection | `8010` | See [Quick start](#quick-start) |
+| Family app | `5173` | `cd apps/family && npm run dev` |
+| Clinician app | `5180` | `cd apps/clinician && npm run dev` |
 
 ---
 
 ## Prerequisites
 
-- Python 3.11+ recommended
-- Node.js 20+ (family / clinician apps)
-- Supabase project (URL + anon key for the Vite apps; `DATABASE_URL` for the Python server if using Postgres)
-- Optional: webcam; Backblaze credentials for cloud clip upload
+- **Python 3.11+** for `action_detection`
+- **Node.js 20+** for the Vite apps
+- **Supabase** project (URL + anon key)
+- Webcam (for recording)
+- Local detector assets (gitignored — supply per machine):
+  - `action_detection/cache/prototypes_xclip.npz` (prototype bank)
+  - `action_detection/models/pose_landmarker.task` (ear-cover wrist gate)
+  - Optional: `action_detection/models/edgeface_xs_gamma_06.pt` + BlazeFace (identity; **off** by default for family)
+
+First detect may download **X-CLIP** (`microsoft/xclip-base-patch16`) from Hugging Face (~750 MB).
 
 ---
 
-## Clone
+## Quick start
 
-```bash
-git clone https://github.com/eAgni-Technologies/atmos-proj.git
-cd atmos-proj
-git checkout new_implementations   # or your working branch
-```
-
-`action_detection/` is a first-party package in this repo (not a submodule).
-
----
-
-## Quick Start — Family app + post-capture detection
-
-This is the main product path.
-
-### 1. Atmos Python env
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Fill DATABASE_URL / DIRECT_URL and Backblaze vars if you use cloud media
-```
-
-### 2. Action detection service (terminal 1)
+### 1. Action detection (terminal 1)
 
 ```bash
 cd action_detection
-python3 -m venv .venv
-source .venv/bin/activate
+
+# Use an existing venv if you have one (example: sibling checkout), or create local:
+#   source ../../action_detection/.venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# Optional identity gate: place models/edgeface_xs_gamma_06.pt
-# Prototype bank: cache/prototypes_xclip.npz (or rebuild via the demo UI)
-python webapp/server.py
-# listens on http://127.0.0.1:8010
+
+# Ensure cache/prototypes_xclip.npz exists (rebuild via demo UI / scripts if needed)
+PORT=8010 python webapp/server.py
+# → http://127.0.0.1:8010
+# → POST http://127.0.0.1:8010/api/detect/video
 ```
 
-First encode may download X-CLIP weights from Hugging Face (~750 MB).
-
-### 3. Atmos API (terminal 2)
-
-```bash
-cd /path/to/atmos-proj
-source .venv/bin/activate
-python -m src.server --port 8000
-# http://127.0.0.1:8000  (replay dashboard)
-# http://127.0.0.1:8000/family  (static family shell, if present)
-```
-
-### 4. Family Vite app (terminal 3)
+### 2. Family app (terminal 2)
 
 ```bash
 cd apps/family
 cp .env.example .env
-# Required:
+# Set:
 #   VITE_SUPABASE_URL=...
 #   VITE_SUPABASE_ANON_KEY=...
-#   VITE_MEDIA_URL=http://localhost:8000
 #   VITE_DETECT_URL=http://127.0.0.1:8010
+# Leave VITE_MEDIA_URL unset (on-device video only).
+
 npm install
 npm run dev
-# http://localhost:5173
+# → http://127.0.0.1:5173
 ```
 
-Sign in with a Supabase user → record a take → wait for scoring → verify / flag events.
+Sign in → **Record now** → stop → wait for **Saving…** / scoring → review events → flag / share.
 
-If the detect service is down, the app toasts and falls back to a local stub (`detector_version: stub`). Successful runs use `xclip-prototypes-v1`.
+| Outcome | `detector_version` |
+| :--- | :--- |
+| Detect service OK | `xclip-prototypes-v1` |
+| Detect down / timeout / error | `stub` (local stand-in + toast) |
 
-### 5. Clinician Vite app (optional, terminal 4)
+### 3. Clinician app (terminal 3, optional)
 
 ```bash
 cd apps/clinician
 cp .env.example .env
-# Same VITE_SUPABASE_* and VITE_MEDIA_URL=http://localhost:8000
+# Same VITE_SUPABASE_* as family. No VITE_DETECT_URL.
+
 npm install
 npm run dev
-# http://localhost:5180
+# → http://127.0.0.1:5180
 ```
 
-Use a clinician account invited by a family share grant.
+Clinician accounts only see children/sessions covered by an active **share grant**. Flagged clips appear in the review queue after the family shares them.
 
 More detail: [doc/detection.md](doc/detection.md).
 
 ---
 
-## Quick Start — Classic edge monitor (optional)
+## Detected classes
 
-Live camera HUD and offline file ingest (MediaPipe skeleton + heuristics / RF). Independent of the family Vite apps.
-
-```bash
-source .venv/bin/activate
-cp .env.example .env
-
-# Optional webhook sink
-python mock_server.py
-
-# Live camera
-python src/main.py
-
-# Offline video → SQLite episodes
-python -m src.ingest samples/sample-2.mp4
-
-# Skeleton replay dashboard
-python -m src.server --port 8000
-# http://127.0.0.1:8000
-```
-
----
-
-## Key Features
-
-- **Handheld family capture** with pre-roll, assent marks, privacy blur helpers, and offline outbox sync.
-- **Post-capture X-CLIP detection** via local FastAPI (`action_detection`), mapped into family `ClassKey`s.
-- **Clinician review** of flagged / shared sessions with clip playback and judgements.
-- **Live edge monitoring** with HUD, webhook / optional SMS alerts, CSV + SQLite episode log.
-- **Skeleton replay dashboard** (11-joint trajectories; no raw video in that path).
-
----
-
-## Project Structure
-
-| Path | Contents |
+| Detector / `ClassKey` | Label in UI |
 | :--- | :--- |
-| `apps/family` | Family capture & review (Vite/React) |
-| `apps/clinician` | Clinician workspace (Vite/React) |
-| `action_detection/` | Few-shot X-CLIP detector + demo UI; API on `:8010` |
-| `src/` | Edge monitor, ingest CLI, event storage, media helpers, HTTP server |
-| `static/` | Single-file HTML dashboards (replay / legacy family shell) |
-| `supabase/` | SQL migrations for app schema |
-| `tests/` | Python unit/integration tests |
-| `samples/` | Sample videos for ingest |
-| `scripts/` | Local helpers (e.g. `scripts/reset-local.sh`) |
-| `data/` | Runtime artifacts (SQLite, CSV) — gitignored |
-| `doc/` | Architecture, setup, detection wiring |
-| `mock_server.py` | Local webhook receiver |
-| `train_classifier.py` | Train RF stimming classifier (edge path) |
+| `ear_cover` | Covering ears |
+| `hair_twirling` | Hair twirling |
+| `head_nodding` | Head nodding |
+
+Legacy stub labels (`flap`, `vocal`, `mand`, `away`, `floor`) may still appear on older rows or stub fallback.
+
+Config: `action_detection/config.yaml`  
+Family mapper: `apps/family/src/lib/detector.ts`
+
+---
+
+## Model & runtime notes
+
+- **Backbone:** X-CLIP (`backbone: xclip` in `config.yaml`).
+- **Bank:** `cache/prototypes_xclip.npz` — classes `ear_cover`, `hair_twirling`, `head_nodding` (512-d).
+- **Identity:** `identity.enabled: false` for unsupervised family post-capture (no Active Subject gallery required).
+- **Family thresholds:** `/api/detect/video` softens uncalibrated tau / per-class scales so short handheld takes are not silent (`soften_for_family_detect` in `action_detection/webapp/server.py`). Live demo thresholds stay stricter.
+- **Stop UX:** family shows **Saving…** while scoring; detect call times out (~45s) then falls back to stub.
+
+Python deps: `action_detection/requirements.txt` (torch, transformers, mediapipe, fastapi, …).
 
 ---
 
@@ -181,39 +153,62 @@ python -m src.server --port 8000
 
 | File | Purpose |
 | :--- | :--- |
-| `.env` | Python server: camera, webhooks, Twilio, `DATABASE_URL`, Backblaze |
-| `apps/family/.env` | `VITE_SUPABASE_*`, `VITE_MEDIA_URL`, `VITE_DETECT_URL` |
-| `apps/clinician/.env` | `VITE_SUPABASE_*`, `VITE_MEDIA_URL` |
-| `action_detection/config.yaml` | Backbone, classes, identity gate, thresholds |
+| `apps/family/.env` | `VITE_SUPABASE_*`, `VITE_DETECT_URL` |
+| `apps/clinician/.env` | `VITE_SUPABASE_*` |
+| `action_detection/config.yaml` | Backbone, classes, gates, thresholds |
+| `.env` (repo root) | Legacy edge-monitor / optional infra only — **not** required for family detect |
 
-Do not commit real secrets. Prefer `.env.example` templates.
+Optional `VITE_MEDIA_URL` (legacy cloud media host) is unused in the default on-device flow. Leave it unset.
 
 ---
 
-## Testing & Linting
+## Project structure
+
+| Path | Contents |
+| :--- | :--- |
+| `apps/family/` | Family capture & review (Vite/React) |
+| `apps/clinician/` | Clinician workspace (Vite/React) |
+| `action_detection/` | X-CLIP detector + FastAPI + demo UI (`:8010`) |
+| `supabase/` | SQL migrations |
+| `doc/` | Product and detection docs |
+| `src/`, `static/`, `samples/` | Legacy edge monitor / ingest / dashboards — **not** used by the family↔detect↔clinician loop |
+
+---
+
+## Testing
 
 ```bash
-# Python
-source .venv/bin/activate
-pytest
-ruff check .
-
-# Family detector mapper smoke test
 cd apps/family
 npx --yes tsx --test src/lib/detector.test.ts
 ```
+
+Smoke-check detect (with services running):
+
+```bash
+curl -sS -F "file=@samples/sample-2.mp4;type=video/mp4" \
+  http://127.0.0.1:8010/api/detect/video | head
+# expect detector_version: xclip-prototypes-v1
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| :--- | :--- |
+| Stop button looks stuck | Scoring in progress — badge should read **Saving…**; first X-CLIP load is slow |
+| Toast: detector offline / stub events | `:8010` down, CORS, or detect timeout |
+| `events: []` but `xclip-prototypes-v1` | No matching behaviour in the clip, or bank/thresholds; quiet clips are normal |
+| 503 prototype bank missing | Place or rebuild `action_detection/cache/prototypes_xclip.npz` |
+| Clinician queue empty | No share grant / nothing flagged — clinician does not call the detector |
 
 ---
 
 ## Documentation
 
-- [Post-capture detection](doc/detection.md) — ports, family ↔ X-CLIP flow
-- [Development Guide](doc/development.md) — setup, modes, alerting
-- [Architecture](doc/architecture.md) — pipeline and threading (edge monitor)
-- [Demo Guide](doc/demo_guide.md) — live / ingest walkthrough
-- [Product Scope](doc/product-scope.md) — goals and privacy principles
-- [Functional FAQ](doc/faq.md) — detection mechanics
-- [Test Plan](doc/test_plan.md) — verification matrix
+- [Post-capture detection](doc/detection.md) — wiring, labels, run steps
+- [Product scope](doc/product-scope.md) — goals and privacy
+- [action_detection/README.md](action_detection/README.md) — detector internals / demo UI
 
 ---
 
@@ -221,4 +216,4 @@ npx --yes tsx --test src/lib/detector.test.ts
 
 See [LICENSE](LICENSE).
 
-Note: `action_detection` EdgeFace weights/architecture are **CC BY-NC-SA 4.0** (non-commercial). See `action_detection/README.md` / the Hugging Face model card before commercial deployment.
+EdgeFace weights/architecture used by identity (when enabled) are **CC BY-NC-SA 4.0** (non-commercial). See `action_detection/README.md` and the Hugging Face model card before commercial use.

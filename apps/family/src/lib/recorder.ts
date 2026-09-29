@@ -306,8 +306,20 @@ export class PhoneRecorder {
     this.recorder = null
     if (!recorder || recorder.state === "inactive") return Promise.resolve()
     return new Promise((resolve) => {
-      recorder.addEventListener("stop", () => resolve(), { once: true })
-      recorder.stop()
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+      recorder.addEventListener("stop", done, { once: true })
+      try {
+        recorder.stop()
+      } catch {
+        done()
+        return
+      }
+      window.setTimeout(done, 2500)
     })
   }
 

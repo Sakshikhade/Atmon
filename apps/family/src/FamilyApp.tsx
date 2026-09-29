@@ -487,9 +487,9 @@ export function FamilyApp({
   const primary = openGrants[0] ?? null
   const clinician = yourClin(primary?.role ?? null)
 
-  function show(message: string) {
+  function show(message: string, ms = 2000) {
     setToast(message)
-    window.setTimeout(() => setToast(null), 2000)
+    window.setTimeout(() => setToast(null), ms)
   }
 
   function go(next: Screen, nextTab?: typeof tab) {
@@ -585,87 +585,93 @@ export function FamilyApp({
     const recorder = capture.engine.current
     if (!recorder || saving) return
     setSaving(true)
-    const take = await recorder.stopTake()
-    if (!take) {
-      setSaving(false)
-      show("Nothing was recorded.")
-      return
-    }
-    const id = uuidv7()
+    setPaused(false)
+    show("Stopping — scoring this take…", 8000)
     try {
-      await saveVideo(id, take.blob)
-    } catch {
+      const take = await recorder.stopTake()
+      if (!take) {
+        show("Nothing was recorded.")
+        return
+      }
+      const id = uuidv7()
+      try {
+        await saveVideo(id, take.blob)
+      } catch {
+        show("Couldn't keep the video on this phone.")
+        go("home")
+        return
+      }
+      const segments = []
+      for (const piece of take.segments) {
+        segments.push({
+          seq: piece.seq,
+          startMs: piece.startMs,
+          durationMs: piece.durationMs,
+          sha256: await sha256(piece.blob),
+        })
+      }
+      const marker = data.tracked[0]?.key ?? "flap"
+      const channels = (audioOn ? "both" : "video") as "both" | "video"
+      const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
+      let detected
+      let detectorVersion = "stub"
+      try {
+        const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
+        detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+        detectorVersion = scored.detectorVersion
+      } catch {
+        detected = detectStub(
+          id,
+          take.durationMs,
+          take.preRollMs,
+          data.tracked.map((item) => item.key),
+        )
+          .map((event) => ({ ...event, channels }))
+          .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+        show("Detector offline — used the local stand-in for this take.")
+      }
+      const payload = {
+        sessionId: id,
+        childId: data.childId,
+        householdId: data.householdId,
+        startedAt: new Date(Date.now() - take.durationMs).toISOString(),
+        durationMs: take.durationMs,
+        preRollMs: take.preRollMs,
+        channels,
+        obscured: take.obscured,
+        detectorVersion,
+        events: detected,
+        segments,
+        suppressed: take.removed.map((range) => ({
+          id: uuidv7(),
+          classKey: marker,
+          startMs: range.startMs,
+          endMs: range.endMs,
+        })),
+        assent: take.assent,
+      }
+      const error = await saveCapture(payload)
+      if (error) {
+        queueOutbox(payload)
+        show("Saved on this phone. It will sync when you're online.")
+      } else {
+        const cloudError = await uploadRecording(id, take.blob)
+        if (cloudError) show(cloudError)
+      }
+      setFreshId(id)
+      setSessionId(id)
+      setTimer(Math.round(take.durationMs / 1000))
+      setSetting(null)
+      setBefore("")
+      setAssent(null)
+      await reload().catch(() => undefined)
+      go("details")
+    } catch (error) {
+      console.error("finishRecording failed", error)
+      show("Couldn't finish this take. Try again.")
+    } finally {
       setSaving(false)
-      show("Couldn't keep the video on this phone.")
-      go("home")
-      return
     }
-    const segments = []
-    for (const piece of take.segments) {
-      segments.push({
-        seq: piece.seq,
-        startMs: piece.startMs,
-        durationMs: piece.durationMs,
-        sha256: await sha256(piece.blob),
-      })
-    }
-    const marker = data.tracked[0]?.key ?? "flap"
-    const channels = (audioOn ? "both" : "video") as "both" | "video"
-    const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
-    let detected
-    let detectorVersion = "stub"
-    try {
-      const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
-      detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-      detectorVersion = scored.detectorVersion
-    } catch {
-      detected = detectStub(
-        id,
-        take.durationMs,
-        take.preRollMs,
-        data.tracked.map((item) => item.key),
-      )
-        .map((event) => ({ ...event, channels }))
-        .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-      show("Detector offline — used the local stand-in for this take.")
-    }
-    const payload = {
-      sessionId: id,
-      childId: data.childId,
-      householdId: data.householdId,
-      startedAt: new Date(Date.now() - take.durationMs).toISOString(),
-      durationMs: take.durationMs,
-      preRollMs: take.preRollMs,
-      channels,
-      obscured: take.obscured,
-      detectorVersion,
-      events: detected,
-      segments,
-      suppressed: take.removed.map((range) => ({
-        id: uuidv7(),
-        classKey: marker,
-        startMs: range.startMs,
-        endMs: range.endMs,
-      })),
-      assent: take.assent,
-    }
-    const error = await saveCapture(payload)
-    if (error) {
-      queueOutbox(payload)
-      show("Saved on this phone. It will sync when you're online.")
-    } else {
-      const cloudError = await uploadRecording(id, take.blob)
-      if (cloudError) show(cloudError)
-    }
-    setFreshId(id)
-    setSessionId(id)
-    setTimer(Math.round(take.durationMs / 1000))
-    setSetting(null)
-    setBefore("")
-    setAssent(null)
-    setSaving(false)
-    await reload().catch(() => undefined)
-    go("details")
   }
 
   async function onVerify(decision: "confirm" | "reject") {
@@ -809,7 +815,9 @@ export function FamilyApp({
     body = (
       <div className="rec-screen">
         <div className="between">
-          <span className={`badge ${paused ? "warn" : "danger"}`}>{paused ? "Paused" : "Recording"}</span>
+          <span className={`badge ${saving ? "warn" : paused ? "warn" : "danger"}`}>
+            {saving ? "Saving…" : paused ? "Paused" : "Recording"}
+          </span>
           <span className="tabnum" style={{ fontSize: 22, fontWeight: 700 }}>{mmss(timer)}</span>
         </div>
         <div className="rec-stage">
@@ -825,12 +833,16 @@ export function FamilyApp({
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{obscuring ? (capture.engine.current?.blurred() ? "Other faces obscured" : "Obscuring on") : "Obscuring off"}</span>
             {!audioOn ? <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>Muted</span> : null}
           </div>
-          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>The camera started when you tapped Record now. Tap a face to mark who this is about.</div>
+          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>
+            {saving
+              ? "Scoring this take. Keep this screen open for a moment."
+              : "The camera started when you tapped Record now. Tap a face to mark who this is about."}
+          </div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>
-          <button className="btn sm ghost" type="button" onClick={() => setSheet("discard")}>Discard</button>
-          <button className="big-stop" type="button" aria-label="Stop recording" disabled={saving} onClick={() => void finishRecording()}><i /></button>
-          <button className="btn sm ghost" type="button" style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => {
+          <button className="btn sm ghost" type="button" disabled={saving} onClick={() => setSheet("discard")}>Discard</button>
+          <button className="big-stop" type="button" aria-label={saving ? "Saving take" : "Stop recording"} disabled={saving} onClick={() => void finishRecording()}><i /></button>
+          <button className="btn sm ghost" type="button" disabled={saving} style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => {
             setPaused((value) => {
               if (value) capture.engine.current?.resume()
               else capture.engine.current?.pause()

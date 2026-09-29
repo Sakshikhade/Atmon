@@ -75,6 +75,9 @@ export function mapActionDetections(
   return mapped.sort((a, b) => a.onsetMs - b.onsetMs)
 }
 
+/** Default wait for post-capture scoring before falling back to the local stub. */
+export const DETECT_TIMEOUT_MS = 45_000
+
 /**
  * Post-capture call to the local action_detection service.
  * Spans are relative to the uploaded file start (pre-roll already in the blob).
@@ -84,16 +87,30 @@ export async function detectWithActionService(
   durationMs: number,
   detectUrl: string,
   channels: Channels = "video",
+  timeoutMs: number = DETECT_TIMEOUT_MS,
 ): Promise<{ events: DraftEvent[]; detectorVersion: string }> {
   const base = detectUrl.replace(/\/$/, "")
   const body = new FormData()
   const type = blob.type || "video/webm"
   body.append("file", blob, type.includes("mp4") ? "capture.mp4" : "capture.webm")
 
-  const res = await fetch(`${base}/api/detect/video`, {
-    method: "POST",
-    body,
-  })
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  let res: Response
+  try {
+    res = await fetch(`${base}/api/detect/video`, {
+      method: "POST",
+      body,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`detect service timed out after ${timeoutMs}ms`)
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timer)
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => "")
     throw new Error(detail || `detect service returned ${res.status}`)

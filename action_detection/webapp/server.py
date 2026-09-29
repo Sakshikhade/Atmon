@@ -85,6 +85,31 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # (spec 8); this exists only so the "live test" step works before that has
 # ever been run. cache/calibration.json's existing value (if any) always wins.
 DEMO_TAU_HIGH = 1.5
+# Family post-capture uses short handheld takes and an uncalibrated demo tau.
+# Live FP-tuned tau_scale (up to 2.0 → effective 3σ) leaves most takes empty.
+# Cap scales / confirm only on /api/detect/video so the live demo stays strict.
+FAMILY_DETECT_TAU_SCALE_CAP = 1.25
+FAMILY_DETECT_CONFIRM_SEC_CAP = 1.5
+FAMILY_DETECT_UNCALIBRATED_TAU = 1.0
+
+
+def soften_for_family_detect(c, tau_high, tau_status):
+    """Return (cfg, tau_high) tuned for unsupervised family post-capture."""
+    orig = c.class_cfg
+
+    def class_cfg(name):
+        d = dict(orig(name))
+        scale = float(d.get("tau_scale", 1.0) or 1.0)
+        d["tau_scale"] = min(scale, FAMILY_DETECT_TAU_SCALE_CAP)
+        confirm = float(d.get("confirm_sec", 0.0) or 0.0)
+        if confirm > FAMILY_DETECT_CONFIRM_SEC_CAP:
+            d["confirm_sec"] = FAMILY_DETECT_CONFIRM_SEC_CAP
+        return d
+
+    c.class_cfg = class_cfg
+    if tau_status.get("state") == "uncalibrated":
+        tau_high = min(float(tau_high), FAMILY_DETECT_UNCALIBRATED_TAU)
+    return c, float(tau_high)
 
 #: Message kinds that may be dropped when a subscriber falls behind. Only the
 #: high-rate cosmetic ones -- never anything that records a detection.
@@ -1642,6 +1667,7 @@ async def detect_video(file: UploadFile = File(...)):
     if sid:
         bind_subject(c, sid)
     tau_high, tau_status = resolve_tau(c)
+    c, tau_high = soften_for_family_detect(c, tau_high, tau_status)
 
     tmp_path = None
     try:
@@ -1765,7 +1791,7 @@ if __name__ == "__main__":
     import uvicorn
 
     host = resolve_host(os.environ.get("HOST"))
-    # 8010 keeps this service clear of atmos dashboard (:8000) and family Vite (:5173).
+    # 8010 keeps this service clear of family Vite (:5173) and clinician Vite (:5180).
     port = int(os.environ.get("PORT", "8010"))
     check_exposure(host, APP_TOKEN)
     if APP_TOKEN and not is_loopback(host):

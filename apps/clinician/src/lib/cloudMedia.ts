@@ -1,6 +1,7 @@
 import { supabase } from "./supabase"
 
-const mediaUrl = import.meta.env.VITE_MEDIA_URL || "http://localhost:8000"
+/** Optional legacy media host. Leave unset unless a separate media API is running. */
+const mediaUrl = (import.meta.env.VITE_MEDIA_URL || "").replace(/\/$/, "")
 
 async function token(): Promise<string | null> {
   const { data } = await supabase.auth.getSession()
@@ -9,6 +10,7 @@ async function token(): Promise<string | null> {
 
 export async function playbackUrl(sessionId: string, eventId: string): Promise<{ url: string | null; message: string | null }> {
   const missing = "This clip stays on the family's phone. Nothing has been uploaded."
+  if (!mediaUrl) return { url: null, message: missing }
   const access = await token()
   if (!access) return { url: null, message: missing }
   try {
@@ -29,6 +31,7 @@ export async function playbackUrl(sessionId: string, eventId: string): Promise<{
 }
 
 export async function playbackStillOpen(sessionId: string): Promise<boolean> {
+  if (!mediaUrl) return false
   const access = await token()
   if (!access) return false
   try {
@@ -57,6 +60,7 @@ async function savePdf(response: Response, filename: string): Promise<string | n
 }
 
 export async function downloadExport(grantId: string): Promise<string | null> {
+  if (!mediaUrl) return "Cloud export is not configured for this build."
   const access = await token()
   if (!access) return "Sign in again."
   try {
@@ -72,6 +76,7 @@ export async function downloadExport(grantId: string): Promise<string | null> {
 }
 
 export async function downloadStoredExport(exportId: string): Promise<string | null> {
+  if (!mediaUrl) return "Cloud export is not configured for this build."
   const access = await token()
   if (!access) return "Sign in again."
   try {

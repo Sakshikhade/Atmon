@@ -7,6 +7,9 @@ verify → clinician review flow.
 The detector lives in this repo at [`action_detection/`](../action_detection)
 (first-party tree — no external submodule).
 
+The product loop does **not** use `python -m src.server` (legacy edge dashboard).
+Detection and scoring run only through `action_detection` on port **8010**.
+
 ## Labels
 
 | Detector class   | Family / clinician `ClassKey` |
@@ -24,27 +27,29 @@ Terminal 1 — detection service (port **8010**):
 
 ```bash
 cd action_detection
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python webapp/server.py
+source ../../action_detection/.venv/bin/activate   # or: python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt   # first time
+PORT=8010 python webapp/server.py
 # POST http://127.0.0.1:8010/api/detect/video
 ```
 
-Terminal 2 — atmos API (media / family backend):
-
-```bash
-# from atmos-proj root
-source .venv/bin/activate
-python -m src.server --port 8000
-```
-
-Terminal 3 — family Vite app:
+Terminal 2 — family Vite app:
 
 ```bash
 cd apps/family
 # .env must include:
+#   VITE_SUPABASE_URL=...
+#   VITE_SUPABASE_ANON_KEY=...
 #   VITE_DETECT_URL=http://127.0.0.1:8010
-#   VITE_MEDIA_URL=http://localhost:8000
+# Leave VITE_MEDIA_URL unset (on-device IndexedDB only).
+npm run dev
+```
+
+Terminal 3 — clinician (optional):
+
+```bash
+cd apps/clinician
+# Same VITE_SUPABASE_*; no detect URL required
 npm run dev
 ```
 
@@ -61,7 +66,7 @@ with `detector_version: stub`. Successful runs set `detector_version` to
 - EdgeFace / pose weights under `action_detection/models/` when you enable identity or the ear wrist gate (large files are gitignored; copy or download per machine)
 - Identity gate defaults to **off** in `action_detection/config.yaml` so family post-capture scoring does not require an Active Subject gallery
 - First request may download X-CLIP weights from Hugging Face (~750 MB)
-- Demo `tau_high` (1.5σ) is used when calibration is uncalibrated
+- Uncalibrated family detect uses a softened demo tau (see `soften_for_family_detect` in `webapp/server.py`)
 
 ## Mapper smoke test
 
