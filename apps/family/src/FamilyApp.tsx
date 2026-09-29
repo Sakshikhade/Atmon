@@ -14,7 +14,7 @@ import {
   updateGrant,
   verifyEvent,
 } from "./lib/api"
-import { detectStub } from "./lib/detector"
+import { detectStub, detectWithActionService } from "./lib/detector"
 import { overlaps } from "./lib/exposure"
 import { uploadRecording } from "./lib/cloudMedia"
 import { uuidv7 } from "./lib/ids"
@@ -610,12 +610,25 @@ export function FamilyApp({
       })
     }
     const marker = data.tracked[0]?.key ?? "flap"
-    const detected = detectStub(
-      id,
-      take.durationMs,
-      take.preRollMs,
-      data.tracked.map((item) => item.key),
-    ).filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+    const channels = (audioOn ? "both" : "video") as "both" | "video"
+    const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
+    let detected
+    let detectorVersion = "stub"
+    try {
+      const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
+      detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+      detectorVersion = scored.detectorVersion
+    } catch {
+      detected = detectStub(
+        id,
+        take.durationMs,
+        take.preRollMs,
+        data.tracked.map((item) => item.key),
+      )
+        .map((event) => ({ ...event, channels }))
+        .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+      show("Detector offline — used the local stand-in for this take.")
+    }
     const payload = {
       sessionId: id,
       childId: data.childId,
@@ -623,8 +636,9 @@ export function FamilyApp({
       startedAt: new Date(Date.now() - take.durationMs).toISOString(),
       durationMs: take.durationMs,
       preRollMs: take.preRollMs,
-      channels: (audioOn ? "both" : "video") as "both" | "video",
+      channels,
       obscured: take.obscured,
+      detectorVersion,
       events: detected,
       segments,
       suppressed: take.removed.map((range) => ({

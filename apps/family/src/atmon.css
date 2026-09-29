@@ -4,6 +4,7 @@
   --ok:#1B8A5A; --ok-soft:#E3F5EC; --warn:#A16207; --warn-soft:#FEF6E4; --danger:#D93636; --danger-soft:#FCE8E8;
   --video:#1F2937; --video-ink:#F9FAFB;
   --c-flap:#8E7CC3; --c-vocal:#5BA9A5; --c-mand:#D3849A; --c-away:#D2A650; --c-floor:#7F93B0;
+  --c-ear:#C45C6A; --c-hair:#6B8F71; --c-nod:#5B7C99;
   --r:14px; --shadow:0 1px 2px rgba(17,24,39,.06),0 1px 3px rgba(17,24,39,.05);
   color-scheme:light;
 }

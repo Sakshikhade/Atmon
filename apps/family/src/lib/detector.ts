@@ -1,4 +1,5 @@
 import type { Channels, ClassKey } from "./model"
+import { CLASSES } from "./model"
 import { uuidv7 } from "./ids"
 
 export type DraftEvent = {
@@ -10,7 +11,23 @@ export type DraftEvent = {
   channels: Channels
 }
 
+export type ActionServiceEvent = {
+  class: string
+  start_sec: number
+  end_sec: number
+  score: number
+}
+
+export type ActionServiceResponse = {
+  detector_version: string
+  events: ActionServiceEvent[]
+}
+
+export const ACTION_CLASS_KEYS: ClassKey[] = ["ear_cover", "hair_twirling", "head_nodding"]
+
 const DEFAULT_CLASSES: ClassKey[] = ["flap", "vocal", "mand", "away", "floor"]
+
+const SCORE_CONFIDENT = 1.8
 
 function hash(value: string): number {
   let h = 0
@@ -25,6 +42,66 @@ function mulberry32(seed: number) {
     let t = Math.imul(state ^ (state >>> 15), 1 | state)
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+export function isActionClassKey(value: string): value is ClassKey {
+  return value in CLASSES && (ACTION_CLASS_KEYS as string[]).includes(value)
+}
+
+/** Map offline action_detection spans onto the family DraftEvent timeline. */
+export function mapActionDetections(
+  events: ActionServiceEvent[],
+  durationMs: number,
+  channels: Channels = "video",
+  newId: () => string = uuidv7,
+): DraftEvent[] {
+  const mapped: DraftEvent[] = []
+  for (const event of events) {
+    if (!isActionClassKey(event.class)) continue
+    const startMs = Math.max(0, Math.round(event.start_sec * 1000))
+    const endMs = Math.max(startMs + 1, Math.round(event.end_sec * 1000))
+    const onsetMs = Math.min(startMs, Math.max(0, durationMs - 1))
+    const duration = Math.min(endMs - startMs, Math.max(1, durationMs - onsetMs))
+    mapped.push({
+      id: newId(),
+      classKey: event.class,
+      onsetMs,
+      durationMs: duration,
+      confidence: event.score >= SCORE_CONFIDENT ? "confident" : "needs_a_look",
+      channels,
+    })
+  }
+  return mapped.sort((a, b) => a.onsetMs - b.onsetMs)
+}
+
+/**
+ * Post-capture call to the local action_detection service.
+ * Spans are relative to the uploaded file start (pre-roll already in the blob).
+ */
+export async function detectWithActionService(
+  blob: Blob,
+  durationMs: number,
+  detectUrl: string,
+  channels: Channels = "video",
+): Promise<{ events: DraftEvent[]; detectorVersion: string }> {
+  const base = detectUrl.replace(/\/$/, "")
+  const body = new FormData()
+  const type = blob.type || "video/webm"
+  body.append("file", blob, type.includes("mp4") ? "capture.mp4" : "capture.webm")
+
+  const res = await fetch(`${base}/api/detect/video`, {
+    method: "POST",
+    body,
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "")
+    throw new Error(detail || `detect service returned ${res.status}`)
+  }
+  const payload = (await res.json()) as ActionServiceResponse
+  return {
+    events: mapActionDetections(payload.events ?? [], durationMs, channels),
+    detectorVersion: payload.detector_version || "xclip-prototypes-v1",
   }
 }
 

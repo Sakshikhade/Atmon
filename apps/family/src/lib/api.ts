@@ -471,6 +471,7 @@ export type CapturePayload = {
   preRollMs: number
   channels: Channels
   obscured: boolean
+  detectorVersion?: string
   events: CaptureEvent[]
   segments: CaptureSegment[]
   suppressed: { id: string; classKey: ClassKey; startMs: number; endMs: number }[]
@@ -490,6 +491,8 @@ export async function saveCapture(input: CapturePayload): Promise<string | null>
   const userId = userData.user?.id
   if (!userId) return "Sign in again to save this session."
 
+  const detectorVersion = input.detectorVersion || "stub"
+
   const session = await supabase.from("sessions").insert({
     id: input.sessionId,
     child_id: input.childId,
@@ -502,7 +505,7 @@ export async function saveCapture(input: CapturePayload): Promise<string | null>
     obscured: input.obscured,
     storage_location: "device",
     processing_status: "ready",
-    detector_version: "stub",
+    detector_version: detectorVersion,
     source: "handheld",
   })
   if (session.error && !alreadyThere(session.error)) return session.error.message
@@ -534,7 +537,7 @@ export async function saveCapture(input: CapturePayload): Promise<string | null>
         source: "system",
         channels: event.channels,
         status: "detected",
-        detector_version: "stub",
+        detector_version: detectorVersion,
       })),
     )
     if (events.error && !alreadyThere(events.error)) return events.error.message

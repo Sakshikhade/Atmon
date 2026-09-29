@@ -62,6 +62,8 @@ Run automated tests with `pytest`. No webcam required.
 
 | Path | Contents |
 | :--- | :--- |
+| `apps/` | Family and clinician Vite apps (Supabase-backed review UX) |
+| `action_detection/` | Git submodule — few-shot X-CLIP action detector ([Atmon](https://github.com/Sakshikhade/Atmon)); post-capture API on `:8010` |
 | `src/` | Python edge monitor, CV pipeline, ML/heuristic classifiers, ingest CLI, event storage, dashboard HTTP server, and alert gateway |
 | `static/` | Standalone single-file HTML/JS/CSS dashboard and skeleton replay visualizer |
 | `tests/` | Unit test suite covering detectors, streams, ingestion, event storage, server, and alert dispatchers |
@@ -94,6 +96,7 @@ ruff check .
 - [Demo Guide](doc/demo_guide.md) — Step-by-step walkthrough of live monitoring, video ingest, and alerting.
 - [Product Scope](doc/product-scope.md) — System scope, goals, target users, and privacy principles.
 - [Test Plan](doc/test_plan.md) — Comprehensive test strategy, test matrix, and verification protocols.
+- [Post-capture detection](doc/detection.md) — Wiring the local action_detection (X-CLIP) service into the family app.
 
 ---
 

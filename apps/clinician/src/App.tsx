@@ -23,21 +23,32 @@ export function App() {
   const load = useCallback(async (userId: string, name: string) => {
     const acceptError = await acceptInvites(name)
     if (acceptError) throw new Error(acceptError)
-    setData(await loadClinician(userId))
+    return loadClinician(userId)
   }, [])
 
   useEffect(() => {
     if (!session) return
+    let cancel = false
     setError(null)
+    setData(null)
     const name = session.user.email?.split("@")[0] ?? "Clinician"
-    void load(session.user.id, name).catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not open the workspace."))
+    void load(session.user.id, name)
+      .then((next) => {
+        if (!cancel) setData(next)
+      })
+      .catch((err: unknown) => {
+        if (!cancel) setError(err instanceof Error ? err.message : "Could not open the workspace.")
+      })
+    return () => {
+      cancel = true
+    }
   }, [session, load])
 
   const reload = useCallback(async () => {
     const { data: auth } = await supabase.auth.getUser()
     if (!auth.user) return
     const name = auth.user.email?.split("@")[0] ?? "Clinician"
-    await load(auth.user.id, name)
+    setData(await load(auth.user.id, name))
   }, [load])
 
   if (session === undefined || (session && !data && !error)) {

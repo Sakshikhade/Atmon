@@ -1,4 +1,12 @@
-export type ClassKey = "flap" | "vocal" | "mand" | "away" | "floor"
+export type ClassKey =
+  | "flap"
+  | "vocal"
+  | "mand"
+  | "away"
+  | "floor"
+  | "ear_cover"
+  | "hair_twirling"
+  | "head_nodding"
 export type Decision = "confirm" | "correct" | "reject"
 
 export const CLASSES: Record<ClassKey, { name: string; short: string; color: string; reliability: string; kind: string }> = {
@@ -7,6 +15,9 @@ export const CLASSES: Record<ClassKey, { name: string; short: string; color: str
   mand: { name: "Communication attempt", short: "Communication attempt", color: "var(--c-mand)", reliability: "Often misses quiet attempts. Worth checking by hand.", kind: "Communication" },
   away: { name: "Moving away from caregiver", short: "Moving away", color: "var(--c-away)", reliability: "Sometimes confuses this with play. Check before relying on it.", kind: "Self-regulating" },
   floor: { name: "Dropping to floor", short: "Dropping to floor", color: "var(--c-floor)", reliability: "Usually right.", kind: "Self-regulating" },
+  ear_cover: { name: "Covering ears", short: "Covering ears", color: "var(--c-ear)", reliability: "From the appearance model. Check when hands leave the frame.", kind: "Self-regulating" },
+  hair_twirling: { name: "Hair twirling", short: "Hair twirling", color: "var(--c-hair)", reliability: "From the appearance model. Sometimes confuses with face-touching.", kind: "Self-regulating" },
+  head_nodding: { name: "Head nodding", short: "Head nodding", color: "var(--c-nod)", reliability: "From the appearance model. Check against natural conversation nods.", kind: "Self-regulating" },
 }
 
 export const CLASS_KEYS = Object.keys(CLASSES) as ClassKey[]

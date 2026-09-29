@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { askCapture, judgeEvent, loadExports, saveAntecedent, sendFamilyNote, type StoredExport } from "./lib/api"
 import { downloadExport, downloadStoredExport, playbackStillOpen, playbackUrl } from "./lib/cloudMedia"
 import {
@@ -47,6 +47,7 @@ export function ClinicianApp({
   const [clipUrl, setClipUrl] = useState<string | null>(null)
   const [clipNote, setClipNote] = useState<string | null>(null)
   const [logExports, setLogExports] = useState<StoredExport[] | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
 
   const events = useMemo(() => data.sessions.flatMap((session) => session.events), [data.sessions])
   const waiting = events.filter((event) => event.flagged && !event.mediaSuppressed && !event.clinicianDecision)
@@ -106,19 +107,43 @@ export function ClinicianApp({
   }
 
   useEffect(() => {
-    if (!playing || !session) return
-    const tick = window.setInterval(() => {
-      setPlayAt((value) => {
-        const next = value + 250
-        if (next >= session.durationMs) {
-          setPlaying(false)
-          return session.durationMs
-        }
-        return next
-      })
-    }, 250)
-    return () => window.clearInterval(tick)
-  }, [playing, session])
+    const video = videoRef.current
+    if (!video || !clipUrl) return
+    if (playing) {
+      if (Math.abs(video.currentTime * 1000 - playAt) > 400) {
+        video.currentTime = playAt / 1000
+      }
+      void video.play().catch(() => setPlaying(false))
+    } else {
+      video.pause()
+    }
+  }, [playing, clipUrl])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !session || !clipUrl) return
+    const onTime = () => {
+      const ms = Math.min(session.durationMs, Math.round(video.currentTime * 1000))
+      setPlayAt(ms)
+      if (ms >= session.durationMs) setPlaying(false)
+    }
+    const onEnded = () => {
+      setPlaying(false)
+      setPlayAt(session.durationMs)
+    }
+    video.addEventListener("timeupdate", onTime)
+    video.addEventListener("ended", onEnded)
+    return () => {
+      video.removeEventListener("timeupdate", onTime)
+      video.removeEventListener("ended", onEnded)
+    }
+  }, [session, clipUrl])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || playing || !clipUrl) return
+    video.currentTime = playAt / 1000
+  }, [eventId, clipUrl])
 
   useEffect(() => {
     if (screen !== "review") return
@@ -335,11 +360,13 @@ export function ClinicianApp({
                 "This part was removed. The frames were not kept."
               ) : clipUrl ? (
                 <video
+                  ref={videoRef}
                   src={clipUrl}
                   controls
                   playsInline
                   onLoadedMetadata={(media) => {
                     media.currentTarget.currentTime = playAt / 1000
+                    if (playing) void media.currentTarget.play().catch(() => setPlaying(false))
                   }}
                 />
               ) : (
@@ -459,7 +486,7 @@ export function ClinicianApp({
     body = (
       <>
         <h1 className="h1">How detection is validated</h1>
-        <p className="muted mt4">The phone is still running the stub detector. These readings are the ones the product will keep per behaviour.</p>
+        <p className="muted mt4">Handheld captures are scored by the local appearance model (X-CLIP prototypes) after recording. Family and clinician judgements stay next to what the model found.</p>
         <table className="table mt24"><thead><tr><th>Behaviour</th><th>Plain reading</th></tr></thead><tbody>
           {CLASS_KEYS.map((key) => <tr key={key}><td><span className="row"><Dot classKey={key} />{CLASSES[key].name}</span></td><td className="small">{CLASSES[key].reliability}</td></tr>)}
         </tbody></table>

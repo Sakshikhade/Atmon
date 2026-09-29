@@ -1,4 +1,12 @@
-export type ClassKey = "flap" | "vocal" | "mand" | "away" | "floor"
+export type ClassKey =
+  | "flap"
+  | "vocal"
+  | "mand"
+  | "away"
+  | "floor"
+  | "ear_cover"
+  | "hair_twirling"
+  | "head_nodding"
 export type EventStatus = "detected" | "confirmed" | "corrected" | "rejected"
 export type Channels = "both" | "video" | "audio"
 export type Decision = "confirm" | "correct" | "reject"
@@ -124,6 +132,24 @@ export const CLASSES: Record<
     short: "Dropping to floor",
     color: "var(--c-floor)",
     reliability: "Usually right.",
+  },
+  ear_cover: {
+    name: "Covering ears",
+    short: "Covering ears",
+    color: "var(--c-ear)",
+    reliability: "From the appearance model. Check when hands leave the frame.",
+  },
+  hair_twirling: {
+    name: "Hair twirling",
+    short: "Hair twirling",
+    color: "var(--c-hair)",
+    reliability: "From the appearance model. Sometimes confuses with face-touching.",
+  },
+  head_nodding: {
+    name: "Head nodding",
+    short: "Head nodding",
+    color: "var(--c-nod)",
+    reliability: "From the appearance model. Check against natural conversation nods.",
   },
 }
 
