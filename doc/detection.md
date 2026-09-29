@@ -4,14 +4,8 @@ The family app scores each finished take with the local **action_detection**
 service (few-shot X-CLIP prototypes), then continues the usual store → family
 verify → clinician review flow.
 
-The detector lives in this repo as a **git submodule** at [`action_detection/`](../action_detection)
-(from [Sakshikhade/Atmon](https://github.com/Sakshikhade/Atmon)).
-
-## Clone / update
-
-```bash
-git submodule update --init --recursive
-```
+The detector lives in this repo at [`action_detection/`](../action_detection)
+(first-party tree — no external submodule).
 
 ## Labels
 
@@ -63,7 +57,9 @@ with `detector_version: stub`. Successful runs set `detector_version` to
 
 ## Prerequisites (action_detection)
 
-- Prototype bank present (`action_detection/cache/prototypes_xclip.npz` or per-subject bank)
+- Prototype bank present locally (`action_detection/cache/prototypes_xclip.npz` or rebuild via the demo UI / scripts; `cache/` is gitignored)
+- EdgeFace / pose weights under `action_detection/models/` when you enable identity or the ear wrist gate (large files are gitignored; copy or download per machine)
+- Identity gate defaults to **off** in `action_detection/config.yaml` so family post-capture scoring does not require an Active Subject gallery
 - First request may download X-CLIP weights from Hugging Face (~750 MB)
 - Demo `tau_high` (1.5σ) is used when calibration is uncalibrated
 

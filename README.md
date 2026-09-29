@@ -31,7 +31,6 @@ Primary product loop: family records on device → local `action_detection` scor
 
 - Python 3.11+ recommended
 - Node.js 20+ (family / clinician apps)
-- Git (with submodule support)
 - Supabase project (URL + anon key for the Vite apps; `DATABASE_URL` for the Python server if using Postgres)
 - Optional: webcam; Backblaze credentials for cloud clip upload
 
@@ -43,10 +42,9 @@ Primary product loop: family records on device → local `action_detection` scor
 git clone https://github.com/eAgni-Technologies/atmos-proj.git
 cd atmos-proj
 git checkout new_implementations   # or your working branch
-git submodule update --init --recursive
 ```
 
-`action_detection/` is a submodule of [Sakshikhade/Atmon](https://github.com/Sakshikhade/Atmon).
+`action_detection/` is a first-party package in this repo (not a submodule).
 
 ---
 
@@ -165,7 +163,7 @@ python -m src.server --port 8000
 | :--- | :--- |
 | `apps/family` | Family capture & review (Vite/React) |
 | `apps/clinician` | Clinician workspace (Vite/React) |
-| `action_detection/` | Git submodule — few-shot X-CLIP detector + demo UI; API on `:8010` |
+| `action_detection/` | Few-shot X-CLIP detector + demo UI; API on `:8010` |
 | `src/` | Edge monitor, ingest CLI, event storage, media helpers, HTTP server |
 | `static/` | Single-file HTML dashboards (replay / legacy family shell) |
 | `supabase/` | SQL migrations for app schema |
@@ -209,7 +207,7 @@ npx --yes tsx --test src/lib/detector.test.ts
 
 ## Documentation
 
-- [Post-capture detection](doc/detection.md) — submodule, ports, family ↔ X-CLIP flow
+- [Post-capture detection](doc/detection.md) — ports, family ↔ X-CLIP flow
 - [Development Guide](doc/development.md) — setup, modes, alerting
 - [Architecture](doc/architecture.md) — pipeline and threading (edge monitor)
 - [Demo Guide](doc/demo_guide.md) — live / ingest walkthrough
@@ -223,4 +221,4 @@ npx --yes tsx --test src/lib/detector.test.ts
 
 See [LICENSE](LICENSE).
 
-Note: `action_detection` EdgeFace weights/architecture are **CC BY-NC-SA 4.0** (non-commercial). See the submodule README / Hugging Face model card before commercial deployment.
+Note: `action_detection` EdgeFace weights/architecture are **CC BY-NC-SA 4.0** (non-commercial). See `action_detection/README.md` / the Hugging Face model card before commercial deployment.

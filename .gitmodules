@@ -1,4 +1,0 @@
-[submodule "action_detection"]
-	path = action_detection
-	url = https://github.com/Sakshikhade/Atmon.git
-	branch = main

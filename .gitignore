@@ -224,9 +224,9 @@ __marimo__/
 scratch-pad.txt
 src/scratchpad.txt
 
-# Local ML data and models
-data/
-models/
+# Local ML data and models (repo root only — action_detection has its own rules)
+/data/
+/models/
 
 # macOS
 .DS_Store
