@@ -116,6 +116,7 @@ export async function detectWithActionService(
     throw new Error(detail || `detect service returned ${res.status}`)
   }
   const payload = (await res.json()) as ActionServiceResponse
+  console.info("detect /api/detect/video", payload)
   return {
     events: mapActionDetections(payload.events ?? [], durationMs, channels),
     detectorVersion: payload.detector_version || "xclip-prototypes-v1",
