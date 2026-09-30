@@ -5,7 +5,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { mapActionDetections } from "./detector.ts"
-import { closedLiveSpans, liveSpanToVideoSec, upsertLiveSpan } from "./liveDetect.ts"
+import { closedLiveSpans, eventsForTake, liveSpanToVideoSec, upsertLiveSpan } from "./liveDetect.ts"
 
 describe("mapActionDetections", () => {
   it("maps class, times, and confidence bands", () => {
@@ -55,6 +55,26 @@ describe("upsertLiveSpan", () => {
     assert.equal(closed[0].end, 4)
     assert.equal(closed[0].score, 3)
     assert.equal(closed[1].class, "head_nodding")
+  })
+})
+
+describe("eventsForTake", () => {
+  it("keeps gestures from this take and closes one that is still open", () => {
+    const events = eventsForTake(
+      [
+        { class: "ear_cover", start: 4, end: 9, score: 2 },
+        { class: "head_nodding", start: 12, end: 18, score: 4 },
+        { class: "hair_twirling", start: 20, end: null, score: 3 },
+      ],
+      10,
+      22,
+      [],
+    )
+    assert.equal(events.length, 2)
+    assert.equal(events[0].class, "head_nodding")
+    assert.equal(events[0].start_sec, 2)
+    assert.equal(events[1].class, "hair_twirling")
+    assert.equal(events[1].end_sec, 12)
   })
 })
 

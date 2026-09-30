@@ -480,6 +480,7 @@ export function FamilyApp({
   const [hasVideo, setHasVideo] = useState(false)
   const [saving, setSaving] = useState(false)
   const [detectHint, setDetectHint] = useState("")
+  const [liveMarks, setLiveMarks] = useState<{ class: string; start_sec: number; end_sec: number; score: number }[]>([])
   const liveRef = useRef<LiveDetect | null>(null)
   const capturing = screen === "recording"
   const capture = useCapture(capturing)
@@ -580,6 +581,7 @@ export function FamilyApp({
       liveRef.current = null
       if (handle) handle.abort()
       setDetectHint("")
+      setLiveMarks([])
       return
     }
     const recorder = capture.engine.current
@@ -590,7 +592,8 @@ export function FamilyApp({
     takeStream.current = capture.stream
     recorder.startTake()
     const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
-    liveRef.current = beginLiveDetect(capture.stream, detectUrl, setDetectHint)
+    setLiveMarks([])
+    liveRef.current = beginLiveDetect(recorder.camera() ?? capture.stream, detectUrl, setDetectHint, setLiveMarks)
   }, [screen, capture.stream, obscuring, audioOn])
 
   async function finishRecording() {
@@ -859,10 +862,19 @@ export function FamilyApp({
             <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>{obscuring ? (capture.engine.current?.blurred() ? "Other faces obscured" : "Obscuring on") : "Obscuring off"}</span>
             {!audioOn ? <span className="badge" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }}>Muted</span> : null}
           </div>
-          <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>
+          <div style={{ position: "absolute", left: 12, bottom: 12, right: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>
             {saving
               ? "Saving this take. The camera is off."
               : detectHint || "The camera started when you tapped Record now. Tap a face to mark who this is about."}
+            {liveMarks.length > 0 ? (
+              <div className="mt8" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {liveMarks.map((mark) => (
+                  <span key={`${mark.class}-${mark.start_sec}`}>
+                    {(mark.class in CLASSES ? CLASSES[mark.class as keyof typeof CLASSES].name : mark.class)} · {mark.start_sec.toFixed(1)}s
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>

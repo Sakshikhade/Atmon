@@ -2,7 +2,6 @@ import type { ActionServiceEvent } from "./detector"
 
 const FRAME_INTERVAL_MS = 125
 const CONFLICT_STOP_AFTER = 12
-const STOP_WAIT_MS = 4000
 
 type PauseRange = { start: number; end: number }
 
@@ -60,6 +59,29 @@ export function closedLiveSpans(spans: Iterable<LiveSpan>): Array<{ class: strin
   return closed
 }
 
+/**
+ * Events that belong to this take. One row per gesture already lives in the map.
+ * A gesture still open at Stop is closed at the current live clock.
+ */
+export function eventsForTake(
+  spans: Iterable<LiveSpan>,
+  takeOriginSec: number,
+  liveNowSec: number,
+  pauses: PauseRange[],
+): ActionServiceEvent[] {
+  const events: ActionServiceEvent[] = []
+  for (const span of spans) {
+    const end = span.end ?? liveNowSec
+    if (end <= takeOriginSec) continue
+    const start = Math.max(span.start, takeOriginSec)
+    const startSec = liveSpanToVideoSec(start - takeOriginSec, 0, pauses)
+    const endSec = liveSpanToVideoSec(end - takeOriginSec, 0, pauses)
+    if (endSec <= startSec) continue
+    events.push({ class: span.class, start_sec: startSec, end_sec: endSec, score: span.score })
+  }
+  return events
+}
+
 export type LiveDetect = {
   stopPump: () => void
   pause: () => void
@@ -72,7 +94,9 @@ type ActiveSession = {
   base: string
   closed: boolean
   setStatus: (onStatus?: (text: string) => void) => void
+  setEvents: (onEvents?: (events: ActionServiceEvent[]) => void) => void
   adoptStream: (stream: MediaStream) => void
+  beginTake: () => void
   handle: LiveDetect
 }
 
@@ -87,18 +111,24 @@ export function beginLiveDetect(
   stream: MediaStream,
   detectUrl: string,
   onStatus?: (text: string) => void,
+  onEvents?: (events: ActionServiceEvent[]) => void,
 ): LiveDetect {
   const base = detectUrl.replace(/\/$/, "")
   if (active && !active.closed && active.base === base) {
     active.setStatus(onStatus)
+    active.setEvents(onEvents)
     active.adoptStream(stream)
+    active.beginTake()
+    active.handle.resume()
     return active.handle
   }
 
   const spans = new Map<string, LiveSpan>()
+  const savedIds = new Set<string>()
   const pauses: PauseRange[] = []
-  const anchor = performance.now()
-  let offsetSec = 0
+  let takeAnchor = performance.now()
+  let takeOrigin = 0
+  let liveStartedAt: number | null = null
   let pauseBegan: number | null = null
   let arm = false
   let attached = false
@@ -108,9 +138,23 @@ export function beginLiveDetect(
   let pumpTimer: number | null = null
   let acceptedOnce = false
   let conflictStreak = 0
-  let stoppedWait: (() => void) | null = null
-  let finished: Promise<ActionServiceEvent[] | null> | null = null
   let report = onStatus
+  let reportEvents = onEvents
+
+  function liveNow(): number {
+    if (liveStartedAt == null) return 0
+    return (performance.now() - liveStartedAt) / 1000
+  }
+
+  function emit() {
+    reportEvents?.(eventsForTake(spans.values(), takeOrigin, liveNow(), pauses))
+  }
+
+  function noteClock(start: number | null | undefined) {
+    if (liveStartedAt != null || start == null) return
+    liveStartedAt = performance.now() - start * 1000
+    if (takeOrigin === 0) takeOrigin = start
+  }
 
   const video = document.createElement("video")
   video.muted = true
@@ -131,7 +175,8 @@ export function beginLiveDetect(
       if (!arm) return
       if (!attached) spans.clear()
       acceptCloses = true
-      offsetSec = (performance.now() - anchor) / 1000
+      liveStartedAt = performance.now()
+      if (takeOrigin === 0) takeOrigin = -((performance.now() - takeAnchor) / 1000)
       const warmup = Math.round(payload.warmup_sec ?? 30)
       report?.(`Watching. The first ${warmup} seconds are warmup.`)
     } else if (payload.kind === "live_warmed_up") {
@@ -140,12 +185,12 @@ export function beginLiveDetect(
     } else if (payload.kind === "live_error" && payload.message) {
       if (!acceptCloses) return
       report?.(payload.message)
-    } else if (payload.kind === "live_open" && acceptCloses) {
-      upsertLiveSpan(spans, payload, "open")
-    } else if (payload.kind === "live_close" && acceptCloses) {
-      upsertLiveSpan(spans, payload, "close")
-    } else if (payload.kind === "live_stopped" && acceptCloses) {
-      stoppedWait?.()
+    } else if ((payload.kind === "live_open" || payload.kind === "live_close") && acceptCloses) {
+      const id = payload.event_id || (payload.class && payload.start != null ? `${payload.class}-${payload.start}` : "")
+      if (id && savedIds.has(id)) return
+      noteClock(payload.start)
+      upsertLiveSpan(spans, payload, payload.kind === "live_close" ? "close" : "open")
+      emit()
     }
   }
 
@@ -205,8 +250,18 @@ export function beginLiveDetect(
 
   function closePause() {
     if (pauseBegan == null) return
-    pauses.push({ start: (pauseBegan - anchor) / 1000, end: (performance.now() - anchor) / 1000 })
+    pauses.push({ start: (pauseBegan - takeAnchor) / 1000, end: (performance.now() - takeAnchor) / 1000 })
     pauseBegan = null
+  }
+
+  function beginTake() {
+    closePause()
+    takeAnchor = performance.now()
+    takeOrigin = liveNow()
+    pauseBegan = null
+    pauses.length = 0
+    spans.clear()
+    emit()
   }
 
   async function postStart(): Promise<boolean> {
@@ -244,37 +299,27 @@ export function beginLiveDetect(
   report?.("Connecting to the detector.")
 
   function finish(): Promise<ActionServiceEvent[] | null> {
-    if (finished) return finished
-    session.closed = true
-    if (active === session) active = null
-    finished = (async () => {
+    const run = (async () => {
       stopPump()
       closePause()
       const ok = await started
       if (!ok) {
         source.close()
         video.srcObject = null
+        session.closed = true
+        if (active === session) active = null
         return null
       }
-      const stopped = new Promise<void>((resolve) => {
-        const timer = window.setTimeout(resolve, STOP_WAIT_MS)
-        stoppedWait = () => {
-          window.clearTimeout(timer)
-          resolve()
-        }
-      })
-      await fetch(`${base}/api/live/stop`, { method: "POST" }).catch(() => undefined)
-      await stopped
-      source.close()
-      video.srcObject = null
-      return closedLiveSpans(spans.values()).map((span) => ({
-        class: span.class,
-        start_sec: liveSpanToVideoSec(span.start, offsetSec, pauses),
-        end_sec: liveSpanToVideoSec(span.end, offsetSec, pauses),
-        score: span.score,
-      }))
+      // Leave the detector running, the way Start demo does, so the next take
+      // keeps the same background. Wait briefly for a close already in flight.
+      await new Promise((resolve) => window.setTimeout(resolve, 600))
+      const events = eventsForTake(spans.values(), takeOrigin, liveNow(), pauses)
+      for (const id of spans.keys()) savedIds.add(id)
+      spans.clear()
+      reportEvents?.(events)
+      return events
     })()
-    return finished
+    return run
   }
 
   const handle: LiveDetect = {
@@ -285,11 +330,13 @@ export function beginLiveDetect(
     },
     resume() {
       closePause()
-      if (!finished) startPump()
+      startPump()
     },
     finish,
     abort() {
-      void finish()
+      stopPump()
+      spans.clear()
+      emit()
     },
   }
 
@@ -299,11 +346,15 @@ export function beginLiveDetect(
     setStatus(next) {
       if (next) report = next
     },
+    setEvents(next) {
+      reportEvents = next
+    },
     adoptStream(next) {
       if (video.srcObject === next) return
       video.srcObject = next
       void video.play().catch(() => undefined)
     },
+    beginTake,
     handle,
   }
   active = session

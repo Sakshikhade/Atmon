@@ -80,6 +80,11 @@ export class PhoneRecorder {
     return this.obscuring && this.didBlur
   }
 
+  /** Raw camera, the same pixels Start demo sends. The preview stream is the obscured canvas. */
+  camera(): MediaStream | null {
+    return this.raw
+  }
+
   async arm(): Promise<MediaStream> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("This browser has no camera.")
@@ -87,12 +92,12 @@ export class PhoneRecorder {
     this.disposed = false
     try {
       this.raw = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
         audio: true,
       })
     } catch {
       this.raw = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user" },
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       })
     }
