@@ -14,7 +14,8 @@ import {
   updateGrant,
   verifyEvent,
 } from "./lib/api"
-import { detectStub, detectWithActionService } from "./lib/detector"
+import { detectStub, detectWithActionService, mapActionDetections } from "./lib/detector"
+import { beginLiveDetect, type LiveDetect } from "./lib/liveDetect"
 import { overlaps } from "./lib/exposure"
 import { uploadRecording } from "./lib/cloudMedia"
 import { uuidv7 } from "./lib/ids"
@@ -478,6 +479,8 @@ export function FamilyApp({
   const [freshId, setFreshId] = useState<string | null>(null)
   const [hasVideo, setHasVideo] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [detectHint, setDetectHint] = useState("")
+  const liveRef = useRef<LiveDetect | null>(null)
   const capturing = screen === "recording"
   const capture = useCapture(capturing)
 
@@ -573,6 +576,10 @@ export function FamilyApp({
   useEffect(() => {
     if (screen !== "recording") {
       takeStream.current = null
+      const handle = liveRef.current
+      liveRef.current = null
+      if (handle) handle.abort()
+      setDetectHint("")
       return
     }
     const recorder = capture.engine.current
@@ -582,6 +589,8 @@ export function FamilyApp({
     if (takeStream.current === capture.stream) return
     takeStream.current = capture.stream
     recorder.startTake()
+    const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
+    liveRef.current = beginLiveDetect(capture.stream, detectUrl, setDetectHint)
   }, [screen, capture.stream, obscuring, audioOn])
 
   async function finishRecording() {
@@ -589,6 +598,10 @@ export function FamilyApp({
     if (!recorder || saving) return
     setSaving(true)
     setPaused(true)
+    const handle = liveRef.current
+    liveRef.current = null
+    handle?.stopPump()
+    const liveDone = handle ? handle.finish() : Promise.resolve(null)
     try {
       const take = await recorder.stopTake()
       if (!take) {
@@ -619,20 +632,29 @@ export function FamilyApp({
       const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
       let detected
       let detectorVersion = "stub"
-      try {
-        const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
-        detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-        detectorVersion = scored.detectorVersion
-      } catch {
-        detected = detectStub(
-          id,
-          take.durationMs,
-          take.preRollMs,
-          data.tracked.map((item) => item.key),
+      const liveEvents = await liveDone
+      if (liveEvents) {
+        console.info("detect live", liveEvents)
+        detected = mapActionDetections(liveEvents, take.durationMs, channels).filter(
+          (event) => !overlaps(event.onsetMs, event.durationMs, take.removed),
         )
-          .map((event) => ({ ...event, channels }))
-          .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-        show("Detector offline — used the local stand-in for this take.")
+        detectorVersion = "xclip-prototypes-v1"
+      } else {
+        try {
+          const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
+          detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+          detectorVersion = scored.detectorVersion
+        } catch {
+          detected = detectStub(
+            id,
+            take.durationMs,
+            take.preRollMs,
+            data.tracked.map((item) => item.key),
+          )
+            .map((event) => ({ ...event, channels }))
+            .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+          show("Detector offline — used the local stand-in for this take.")
+        }
       }
       const payload = {
         sessionId: id,
@@ -839,8 +861,8 @@ export function FamilyApp({
           </div>
           <div style={{ position: "absolute", left: 12, bottom: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>
             {saving
-              ? "Scoring this take. Keep this screen open for a moment."
-              : "The camera started when you tapped Record now. Tap a face to mark who this is about."}
+              ? "Saving this take. The camera is off."
+              : detectHint || "The camera started when you tapped Record now. Tap a face to mark who this is about."}
           </div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>
@@ -848,8 +870,13 @@ export function FamilyApp({
           <button className="big-stop" type="button" aria-label={saving ? "Saving take" : "Stop recording"} disabled={saving} onClick={() => void finishRecording()}><i /></button>
           <button className="btn sm ghost" type="button" disabled={saving} style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => {
             setPaused((value) => {
-              if (value) capture.engine.current?.resume()
-              else capture.engine.current?.pause()
+              if (value) {
+                capture.engine.current?.resume()
+                liveRef.current?.resume()
+              } else {
+                capture.engine.current?.pause()
+                liveRef.current?.pause()
+              }
               return !value
             })
           }}>{paused ? "Resume" : "Pause"}</button>

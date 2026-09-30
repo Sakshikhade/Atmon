@@ -5,6 +5,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { mapActionDetections } from "./detector.ts"
+import { liveSpanToVideoSec } from "./liveDetect.ts"
 
 describe("mapActionDetections", () => {
   it("maps class, times, and confidence bands", () => {
@@ -39,5 +40,13 @@ describe("mapActionDetections", () => {
     assert.equal(events[0].onsetMs, 9500)
     assert.equal(events[0].durationMs, 500)
     assert.equal(events[0].channels, "both")
+  })
+})
+
+describe("liveSpanToVideoSec", () => {
+  it("shifts for detector startup and drops paused time", () => {
+    const pauses = [{ start: 2, end: 5 }]
+    assert.equal(liveSpanToVideoSec(0, 1.5, pauses), 1.5)
+    assert.equal(liveSpanToVideoSec(4, 1.5, pauses), 2.5)
   })
 })
