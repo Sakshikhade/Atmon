@@ -503,6 +503,9 @@ export function FamilyApp({
     setSessionId(id)
     setFreshId(null)
     setCheckRun(false)
+    setPlayAt(0)
+    setPlaying(false)
+    setHasVideo(false)
     go("session", "log")
   }
 
@@ -939,6 +942,33 @@ export function FamilyApp({
         <button className="btn quiet" type="button" onClick={() => go("log")}>‹ Sessions</button>
         <h1 className="h2 mt8">{settingLabel(session.setting)}</h1>
         <p className="muted small mt4">{whenLabel(session.startedAt)}, {mmss(session.durationMs / 1000)} long. {channelsLabel(session.channels)}.</p>
+        <div className="player mt12">
+          <SessionVideo
+            sessionId={session.id}
+            playAt={playAt}
+            playing={playing}
+            speed={speed}
+            onReady={setHasVideo}
+            onTime={(ms, ended) => {
+              setPlayAt(ms)
+              if (ended || ms >= session.durationMs - 200) setPlaying(false)
+            }}
+          />
+          <div className="ov"><span className="badge">{session.obscured ? "Other faces obscured" : "No other faces obscured"}</span></div>
+          {session.events.some((item) => item.mediaSuppressed && playAt >= item.onsetMs && playAt < item.onsetMs + item.durationMs) ? (
+            <div className="scene-fallback">This part was removed. The frames were not kept.</div>
+          ) : null}
+          <div className="tc">{mmss(playAt / 1000)} / {mmss(session.durationMs / 1000)}</div>
+        </div>
+        <input className="scrub mt8" type="range" min={0} max={Math.max(session.durationMs, 1)} step={250} value={Math.min(playAt, session.durationMs)} aria-label="Scrub through the recording" onChange={(input) => setPlayAt(Number(input.target.value))} />
+        <div className="ctrls">
+          <button className="btn" type="button" onClick={() => setPlaying((value) => !value)}>{playing ? "Pause" : "Play"}</button>
+          <div className="spd" role="group" aria-label="Playback speed">
+            {[1, 1.5, 2].map((value) => (
+              <button key={value} type="button" className={speed === value ? "on" : ""} onClick={() => setSpeed(value)}>{value}x</button>
+            ))}
+          </div>
+        </div>
         <div className="card flat mt12">
           <Timeline session={session} onOpen={(id) => openEvent(id)} />
           <p className="tiny muted">Tap a mark to open it. Hatched is the 30 seconds before.</p>
@@ -956,7 +986,11 @@ export function FamilyApp({
           {unchecked ? <span className="small muted">{unchecked} to check</span> : null}
         </div>
         <div className="card flat" style={{ padding: "0 14px" }}>
-          {session.events.map((item) => <EventRow key={item.id} item={item} parent={session} />)}
+          {session.events.length === 0 ? (
+            <p className="small muted" style={{ padding: "14px 0" }}>Nothing was marked in this take.</p>
+          ) : (
+            session.events.map((item) => <EventRow key={item.id} item={item} parent={session} />)
+          )}
         </div>
         {unchecked ? (
           <button className="btn mt16" type="button" onClick={() => {
