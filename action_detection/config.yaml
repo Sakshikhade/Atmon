@@ -180,8 +180,8 @@ live:
   window_scales: [0.7, 1.0]         # drop the 1.4x scale used offline
   close_on_short_window: true
   min_duration_sec: 1.0             # allow brief nods; offline still uses ratio*W_base
-  background_warmup_chunks: 15      # 30s at chunk_sec 2.0 — do not cut this;
-                                    # short warmups let sigma fire on noise
+  background_warmup_chunks: 5       # 10s at chunk_sec 2.0. Was 15 (30s); a shorter
+                                    # warmup opens sooner and admits more false alarms.
   background_window_chunks: 300     # ~10 min of trailing history
 
   # Cross-class resolution, online (spec 7.3.5). Offline this runs after
