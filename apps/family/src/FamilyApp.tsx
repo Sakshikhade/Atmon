@@ -519,20 +519,20 @@ export function FamilyApp({
   }
 
   useEffect(() => {
-    if (screen !== "recording" || paused) return
+    if (screen !== "recording" || paused || saving) return
     const tick = window.setInterval(() => setTimer((value) => value + 1), 1000)
     return () => window.clearInterval(tick)
-  }, [screen, paused])
+  }, [screen, paused, saving])
 
   useEffect(() => {
-    if (screen !== "processing") return
+    if (screen !== "processing" || saving) return
     const timerId = window.setTimeout(() => {
       const next = freshId ?? sessionId
       if (next) openSession(next)
       else go("home")
     }, 2200)
     return () => window.clearTimeout(timerId)
-  }, [screen, freshId, sessionId])
+  }, [screen, freshId, sessionId, saving])
 
   useEffect(() => {
     if (!playing || !session || hasVideo) return
@@ -588,14 +588,15 @@ export function FamilyApp({
     const recorder = capture.engine.current
     if (!recorder || saving) return
     setSaving(true)
-    setPaused(false)
-    show("Stopping — scoring this take…", 8000)
+    setPaused(true)
     try {
       const take = await recorder.stopTake()
       if (!take) {
+        setPaused(false)
         show("Nothing was recorded.")
         return
       }
+      go("processing")
       const id = uuidv7()
       try {
         await saveVideo(id, take.blob)
@@ -927,9 +928,9 @@ export function FamilyApp({
     body = (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", textAlign: "center", padding: "60px 10px" }}>
         <div className="spinner" />
-        <h2 className="h2 mt24">Finding {data.childName}'s tracked behaviours</h2>
-        <p className="muted mt12">Running on this phone. Nothing has been uploaded. Usually under two minutes.</p>
-        <p className="tiny muted mt24">Session saved. You can close the app.</p>
+        <h2 className="h2 mt24">{saving ? "Scoring this take" : `Finding ${data.childName}'s tracked behaviours`}</h2>
+        <p className="muted mt12">{saving ? "The camera is off. This usually takes under a minute." : "Running on this phone. Nothing has been uploaded. Usually under two minutes."}</p>
+        <p className="tiny muted mt24">{saving ? "Keep this screen open." : "Session saved. You can close the app."}</p>
       </div>
     )
   }
