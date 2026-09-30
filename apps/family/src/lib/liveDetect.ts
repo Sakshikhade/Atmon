@@ -158,10 +158,22 @@ export function beginLiveDetect(
 
   const video = document.createElement("video")
   video.muted = true
+  video.autoplay = true
   video.playsInline = true
+  video.setAttribute("playsinline", "true")
+  // A video that is not in the document often never paints. Start demo draws
+  // from an on-screen element; without this, Family posts empty JPEGs the
+  // server still accepts.
+  video.style.cssText = "position:fixed;left:0;top:0;width:160px;height:120px;opacity:0.02;pointer-events:none"
+  document.body.appendChild(video)
   video.srcObject = stream
   void video.play().catch(() => undefined)
   const canvas = document.createElement("canvas")
+
+  function unmountVideo() {
+    video.srcObject = null
+    video.remove()
+  }
 
   const source = new EventSource(`${base}/api/stream`)
   source.onmessage = (message) => {
@@ -205,9 +217,9 @@ export function beginLiveDetect(
 
   async function tick(gen: number) {
     if (gen !== pumpGen || !pumping) return
-    if (video.readyState >= 2) {
-      const width = video.videoWidth || 640
-      const height = video.videoHeight || 480
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+      const width = video.videoWidth
+      const height = video.videoHeight
       if (canvas.width !== width) canvas.width = width
       if (canvas.height !== height) canvas.height = height
       canvas.getContext("2d")?.drawImage(video, 0, 0, width, height)
@@ -264,22 +276,39 @@ export function beginLiveDetect(
     emit()
   }
 
+  async function waitForPicture() {
+    const deadline = performance.now() + 4000
+    while (performance.now() < deadline) {
+      if (video.videoWidth > 0 && video.readyState >= 2) return
+      await new Promise((resolve) => window.setTimeout(resolve, 50))
+    }
+  }
+
+  async function waitIdle() {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const mode = await detectorMode(base)
+      if (!mode || mode === "idle") return
+      await new Promise((resolve) => window.setTimeout(resolve, 300))
+    }
+  }
+
   async function postStart(): Promise<boolean> {
     try {
+      await waitForPicture()
       arm = true
-      const res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
-      if (res.ok) return true
+      let res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
       if (res.status === 409) {
-        const mode = await detectorMode(base)
-        if (mode === "detecting" || mode === "recording") {
-          attached = true
-          acceptCloses = true
-          report?.("Watching the detector already running.")
-          return true
-        }
+        // The demo (or a previous take) still owns the only live session.
+        // Joining it mixes two cameras into one background, and nothing opens.
+        await fetch(`${base}/api/live/stop`, { method: "POST" }).catch(() => undefined)
+        await waitIdle()
+        res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
       }
-      arm = false
-      return false
+      if (!res.ok) {
+        arm = false
+        return false
+      }
+      return true
     } catch {
       arm = false
       return false
@@ -290,12 +319,14 @@ export function beginLiveDetect(
     if (!ok) {
       stopPump()
       source.close()
+      unmountVideo()
       report?.("Detector offline. This take will be scored after you stop.")
+    } else {
+      startPump()
     }
     return ok
   })
 
-  startPump()
   report?.("Connecting to the detector.")
 
   function finish(): Promise<ActionServiceEvent[] | null> {
@@ -305,7 +336,7 @@ export function beginLiveDetect(
       const ok = await started
       if (!ok) {
         source.close()
-        video.srcObject = null
+        unmountVideo()
         session.closed = true
         if (active === session) active = null
         return null
