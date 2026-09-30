@@ -238,9 +238,9 @@ classes:
     repetitive: false               # sustained posture, not rhythmic
     # Appearance-only while pose/hands DTW fusion is disabled (held-out harmful).
     weights: {vjepa: 1.0, pose: 0.0, hands: 0.0}
-    # Live FPs open at ~1.5-2.2σ on chin-rest / face motion. Raise this class
-    # only -- head_nodding stays at the global tau.
-    tau_scale: 1.8                  # effective tau_high = 2.7 sigma
+    # Same open bar as head_nodding (global tau). A higher scale kept this class
+    # from opening on short handheld takes.
+    tau_scale: 1.0                  # effective tau_high = 1.5 sigma
     # atmos-proj style: require a wrist near an ear before opening. Appearance
     # alone cannot tell chin-rest from ear cover; geometry can. Does NOT enable
     # DTW pose fusion (pose.enabled stays false).
@@ -251,13 +251,10 @@ classes:
     allow_flip: true                # mirrored, still hair twirling
     repetitive: true                # Phase 5 only, unused in v1
     weights: {vjepa: 1.0, pose: 0.0, hands: 0.0}
-    # Live FPs open at ~1.5-2.3σ under the shared tau (1.5). Raise only this
-    # class so idle face/hand motion and ear→hair handoffs need a clearer hit.
-    # head_nodding / ear_cover stay at the global tau.
-    tau_scale: 2.0                  # effective tau_high = 3.0 sigma
-    # Require ~3s above tau before opening. Kills single-chunk outliers /
-    # brief face-near motion that looked like hair without sustained action.
-    confirm_sec: 3.0
+    # Same open bar as head_nodding. The previous 2.0 scale and 3s confirm
+    # required a sustained hit near 3 sigma, so short twirls never opened.
+    tau_scale: 1.0                  # effective tau_high = 1.5 sigma
+    confirm_sec: 0.0
 
   head_nodding:
     allow_flip: false
