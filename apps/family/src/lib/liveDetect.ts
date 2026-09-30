@@ -6,6 +6,21 @@ const STOP_WAIT_MS = 4000
 
 type PauseRange = { start: number; end: number }
 
+type LiveSpan = {
+  class: string
+  start: number
+  end: number | null
+  score: number
+}
+
+export type LiveNotice = {
+  event_id?: string
+  class?: string
+  start?: number | null
+  end?: number | null
+  score?: number | null
+}
+
 /**
  * Map a live-detector timestamp onto the take.
  * Live seconds start when the server loop starts; the recording starts earlier
@@ -21,6 +36,30 @@ export function liveSpanToVideoSec(liveSec: number, offsetSec: number, pauses: P
   return Math.max(0, wall - paused)
 }
 
+/** One row per gesture. A later close replaces the open notice with the same id. */
+export function upsertLiveSpan(spans: Map<string, LiveSpan>, notice: LiveNotice, kind: "open" | "close"): void {
+  if (!notice.class || notice.start == null) return
+  const id = notice.event_id || `${notice.class}-${notice.start}`
+  const prev = spans.get(id)
+  const end = kind === "close" ? (notice.end ?? prev?.end ?? null) : (prev?.end ?? null)
+  const score = kind === "close" || notice.score != null ? Number(notice.score ?? prev?.score ?? 0) : (prev?.score ?? 0)
+  spans.set(id, {
+    class: notice.class,
+    start: prev?.start ?? notice.start,
+    end,
+    score,
+  })
+}
+
+export function closedLiveSpans(spans: Iterable<LiveSpan>): Array<{ class: string; start: number; end: number; score: number }> {
+  const closed: Array<{ class: string; start: number; end: number; score: number }> = []
+  for (const span of spans) {
+    if (span.end == null) continue
+    closed.push({ class: span.class, start: span.start, end: span.end, score: span.score })
+  }
+  return closed
+}
+
 export type LiveDetect = {
   stopPump: () => void
   pause: () => void
@@ -29,8 +68,19 @@ export type LiveDetect = {
   abort: () => void
 }
 
+type ActiveSession = {
+  base: string
+  closed: boolean
+  setStatus: (onStatus?: (text: string) => void) => void
+  adoptStream: (stream: MediaStream) => void
+  handle: LiveDetect
+}
+
+let active: ActiveSession | null = null
+
 /**
  * Run the same live loop as the demo while a family take is recording.
+ * One session is shared across React remounts. A busy detector is joined, not stopped.
  * Returns null when the detector never started, so the caller can score the file instead.
  */
 export function beginLiveDetect(
@@ -39,12 +89,19 @@ export function beginLiveDetect(
   onStatus?: (text: string) => void,
 ): LiveDetect {
   const base = detectUrl.replace(/\/$/, "")
-  const anchor = performance.now()
-  const spans = new Map<string, { class: string; start: number; end: number; score: number }>()
+  if (active && !active.closed && active.base === base) {
+    active.setStatus(onStatus)
+    active.adoptStream(stream)
+    return active.handle
+  }
+
+  const spans = new Map<string, LiveSpan>()
   const pauses: PauseRange[] = []
+  const anchor = performance.now()
   let offsetSec = 0
   let pauseBegan: number | null = null
   let arm = false
+  let attached = false
   let acceptCloses = false
   let pumping = false
   let pumpGen = 0
@@ -53,6 +110,7 @@ export function beginLiveDetect(
   let conflictStreak = 0
   let stoppedWait: (() => void) | null = null
   let finished: Promise<ActionServiceEvent[] | null> | null = null
+  let report = onStatus
 
   const video = document.createElement("video")
   video.muted = true
@@ -63,16 +121,7 @@ export function beginLiveDetect(
 
   const source = new EventSource(`${base}/api/stream`)
   source.onmessage = (message) => {
-    let payload: {
-      kind?: string
-      class?: string
-      start?: number
-      end?: number
-      score?: number
-      event_id?: string
-      warmup_sec?: number
-      message?: string
-    }
+    let payload: LiveNotice & { kind?: string; warmup_sec?: number; message?: string }
     try {
       payload = JSON.parse(message.data) as typeof payload
     } catch {
@@ -80,30 +129,21 @@ export function beginLiveDetect(
     }
     if (payload.kind === "live_started") {
       if (!arm) return
-      spans.clear()
+      if (!attached) spans.clear()
       acceptCloses = true
       offsetSec = (performance.now() - anchor) / 1000
       const warmup = Math.round(payload.warmup_sec ?? 30)
-      onStatus?.(`Watching. The first ${warmup} seconds are warmup.`)
+      report?.(`Watching. The first ${warmup} seconds are warmup.`)
     } else if (payload.kind === "live_warmed_up") {
       if (!acceptCloses) return
-      onStatus?.("Detections can open now.")
+      report?.("Detections can open now.")
     } else if (payload.kind === "live_error" && payload.message) {
       if (!acceptCloses) return
-      onStatus?.(payload.message)
-    } else if (
-      payload.kind === "live_close" &&
-      acceptCloses &&
-      payload.class &&
-      payload.start != null &&
-      payload.end != null
-    ) {
-      spans.set(payload.event_id || `${payload.class}-${payload.start}`, {
-        class: payload.class,
-        start: payload.start,
-        end: payload.end,
-        score: Number(payload.score ?? 0),
-      })
+      report?.(payload.message)
+    } else if (payload.kind === "live_open" && acceptCloses) {
+      upsertLiveSpan(spans, payload, "open")
+    } else if (payload.kind === "live_close" && acceptCloses) {
+      upsertLiveSpan(spans, payload, "close")
     } else if (payload.kind === "live_stopped" && acceptCloses) {
       stoppedWait?.()
     }
@@ -169,38 +209,22 @@ export function beginLiveDetect(
     pauseBegan = null
   }
 
-  async function waitIdle() {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const res = await fetch(`${base}/api/state`)
-        if (!res.ok) return
-        const body = (await res.json()) as { mode?: string }
-        if (!body.mode || body.mode === "idle") return
-      } catch {
-        return
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 300))
-    }
-  }
-
   async function postStart(): Promise<boolean> {
     try {
       arm = true
-      let res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
+      const res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
+      if (res.ok) return true
       if (res.status === 409) {
-        arm = false
-        acceptCloses = false
-        spans.clear()
-        await fetch(`${base}/api/live/stop`, { method: "POST" }).catch(() => undefined)
-        await waitIdle()
-        arm = true
-        res = await fetch(`${base}/api/live/start?source=browser`, { method: "POST" })
+        const mode = await detectorMode(base)
+        if (mode === "detecting" || mode === "recording") {
+          attached = true
+          acceptCloses = true
+          report?.("Watching the detector already running.")
+          return true
+        }
       }
-      if (!res.ok) {
-        arm = false
-        return false
-      }
-      return true
+      arm = false
+      return false
     } catch {
       arm = false
       return false
@@ -211,16 +235,18 @@ export function beginLiveDetect(
     if (!ok) {
       stopPump()
       source.close()
-      onStatus?.("Detector offline. This take will be scored after you stop.")
+      report?.("Detector offline. This take will be scored after you stop.")
     }
     return ok
   })
 
   startPump()
-  onStatus?.("Connecting to the detector.")
+  report?.("Connecting to the detector.")
 
   function finish(): Promise<ActionServiceEvent[] | null> {
     if (finished) return finished
+    session.closed = true
+    if (active === session) active = null
     finished = (async () => {
       stopPump()
       closePause()
@@ -241,7 +267,7 @@ export function beginLiveDetect(
       await stopped
       source.close()
       video.srcObject = null
-      return [...spans.values()].map((span) => ({
+      return closedLiveSpans(spans.values()).map((span) => ({
         class: span.class,
         start_sec: liveSpanToVideoSec(span.start, offsetSec, pauses),
         end_sec: liveSpanToVideoSec(span.end, offsetSec, pauses),
@@ -251,7 +277,7 @@ export function beginLiveDetect(
     return finished
   }
 
-  return {
+  const handle: LiveDetect = {
     stopPump,
     pause() {
       stopPump()
@@ -265,5 +291,32 @@ export function beginLiveDetect(
     abort() {
       void finish()
     },
+  }
+
+  const session: ActiveSession = {
+    base,
+    closed: false,
+    setStatus(next) {
+      if (next) report = next
+    },
+    adoptStream(next) {
+      if (video.srcObject === next) return
+      video.srcObject = next
+      void video.play().catch(() => undefined)
+    },
+    handle,
+  }
+  active = session
+  return handle
+}
+
+async function detectorMode(base: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${base}/api/state`)
+    if (!res.ok) return null
+    const body = (await res.json()) as { mode?: string }
+    return body.mode ?? null
+  } catch {
+    return null
   }
 }

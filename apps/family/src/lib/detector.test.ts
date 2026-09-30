@@ -5,7 +5,7 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 import { mapActionDetections } from "./detector.ts"
-import { liveSpanToVideoSec } from "./liveDetect.ts"
+import { closedLiveSpans, liveSpanToVideoSec, upsertLiveSpan } from "./liveDetect.ts"
 
 describe("mapActionDetections", () => {
   it("maps class, times, and confidence bands", () => {
@@ -40,6 +40,21 @@ describe("mapActionDetections", () => {
     assert.equal(events[0].onsetMs, 9500)
     assert.equal(events[0].durationMs, 500)
     assert.equal(events[0].channels, "both")
+  })
+})
+
+describe("upsertLiveSpan", () => {
+  it("keeps one row when the same gesture opens and closes", () => {
+    const spans = new Map()
+    upsertLiveSpan(spans, { event_id: "a", class: "ear_cover", start: 1, score: 1 }, "open")
+    upsertLiveSpan(spans, { event_id: "a", class: "ear_cover", start: 1, end: 4, score: 3 }, "close")
+    upsertLiveSpan(spans, { event_id: "a", class: "ear_cover", start: 1, end: 4, score: 3 }, "close")
+    upsertLiveSpan(spans, { event_id: "b", class: "head_nodding", start: 5, end: 7, score: 2 }, "close")
+    const closed = closedLiveSpans(spans.values())
+    assert.equal(closed.length, 2)
+    assert.equal(closed[0].end, 4)
+    assert.equal(closed[0].score, 3)
+    assert.equal(closed[1].class, "head_nodding")
   })
 })
 
