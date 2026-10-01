@@ -33,3 +33,4 @@ data/clips/
 *.pem
 dev-Juno.pem
 .gstack/
+.gstack-design-audit/

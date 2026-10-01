@@ -31,13 +31,15 @@ import os
 import queue
 import secrets
 import sys
+import tempfile
 import threading
 import time
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -60,7 +62,9 @@ from src.live import (
     pose_required_for_scoring,
 )
 from src.pose import POSE_EDGES, landmarks_to_overlay
-from src.prototypes import bank_path, build_bank, save_bank
+from src.pipeline import grid_for_video
+from src.prototypes import bank_path, build_bank, load_bank, save_bank
+from src.scoring import group_detections
 from src.subjects import (
     bind_subject,
     count_reference_clips,
@@ -81,6 +85,31 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # (spec 8); this exists only so the "live test" step works before that has
 # ever been run. cache/calibration.json's existing value (if any) always wins.
 DEMO_TAU_HIGH = 1.5
+# Family post-capture uses short handheld takes and an uncalibrated demo tau.
+# Live FP-tuned tau_scale (up to 2.0 → effective 3σ) leaves most takes empty.
+# Cap scales / confirm only on /api/detect/video so the live demo stays strict.
+FAMILY_DETECT_TAU_SCALE_CAP = 1.25
+FAMILY_DETECT_CONFIRM_SEC_CAP = 1.5
+FAMILY_DETECT_UNCALIBRATED_TAU = 1.0
+
+
+def soften_for_family_detect(c, tau_high, tau_status):
+    """Return (cfg, tau_high) tuned for unsupervised family post-capture."""
+    orig = c.class_cfg
+
+    def class_cfg(name):
+        d = dict(orig(name))
+        scale = float(d.get("tau_scale", 1.0) or 1.0)
+        d["tau_scale"] = min(scale, FAMILY_DETECT_TAU_SCALE_CAP)
+        confirm = float(d.get("confirm_sec", 0.0) or 0.0)
+        if confirm > FAMILY_DETECT_CONFIRM_SEC_CAP:
+            d["confirm_sec"] = FAMILY_DETECT_CONFIRM_SEC_CAP
+        return d
+
+    c.class_cfg = class_cfg
+    if tau_status.get("state") == "uncalibrated":
+        tau_high = min(float(tau_high), FAMILY_DETECT_UNCALIBRATED_TAU)
+    return c, float(tau_high)
 
 #: Message kinds that may be dropped when a subscriber falls behind. Only the
 #: high-rate cosmetic ones -- never anything that records a detection.
@@ -135,6 +164,22 @@ class AppState:
 
 STATE = AppState()
 app = FastAPI(title="Few-shot action detector -- demo")
+
+# Family app (Vite) posts recorded WebM/MP4 here for post-capture scoring.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:5180",
+        "http://localhost:5180",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DETECTOR_VERSION = "xclip-prototypes-v1"
 
 
 @app.on_event("startup")
@@ -1571,6 +1616,122 @@ def api_classes_create(class_name: str):
 
 
 # --------------------------------------------------------------------------
+# Post-capture detect (atmos family app)
+# --------------------------------------------------------------------------
+
+_VIDEO_SUFFIXES = {
+    "video/webm": ".webm",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "application/octet-stream": ".webm",
+}
+
+
+@app.post("/api/detect/video")
+async def detect_video(file: UploadFile = File(...)):
+    """Score an uploaded clip with the prototype bank (offline path).
+
+    Used by the atmos family app after stopTake. Returns event spans in seconds
+    relative to the start of the uploaded file (including any pre-roll the
+    client baked into the blob).
+    """
+    if not file.filename and not file.content_type:
+        raise HTTPException(400, "expected a video file")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+
+    suffix = _VIDEO_SUFFIXES.get((file.content_type or "").split(";")[0].strip(), None)
+    if suffix is None:
+        name = (file.filename or "").lower()
+        if name.endswith(".mp4"):
+            suffix = ".mp4"
+        elif name.endswith(".mov"):
+            suffix = ".mov"
+        else:
+            suffix = ".webm"
+
+    c = cfg()
+    c, sid = bind_active_subject(c, require=False)
+    try:
+        bank, w_base_sec = load_bank(c)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            503,
+            "prototype bank missing — record references and rebuild prototypes first (%s)"
+            % exc,
+        ) from exc
+
+    c = load_config(CONFIG_PATH, w_base_sec=w_base_sec)
+    if sid:
+        bind_subject(c, sid)
+    tau_high, tau_status = resolve_tau(c)
+    c, tau_high = soften_for_family_detect(c, tau_high, tau_status)
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+
+        # Warm encoder once so grid_for_video does not race first download alone.
+        get_encoder(c)
+
+        from src.face_id import face_match_per_chunk, identity_enabled
+
+        video_id, bundle, class_names, grid, parts = grid_for_video(
+            c, bank, tmp_path, force=True
+        )
+        face_series = None
+        if identity_enabled(c) and sid:
+            face_series = face_match_per_chunk(
+                c, tmp_path, sid, bundle["starts"], bundle["chunk_sec"]
+            )
+        detections = group_detections(
+            class_names,
+            grid,
+            bundle["starts"],
+            c,
+            tau_high,
+            bundle["chunk_sec"],
+            pose_sequences=parts.get("_pose_sequences"),
+            face_match_per_chunk=face_series,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, "could not score video: %s" % exc) from exc
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    duration = (
+        float(bundle["starts"][-1] + bundle["chunk_sec"]) if len(bundle["starts"]) else 0.0
+    )
+    return {
+        "detector_version": DETECTOR_VERSION,
+        "video_id": video_id,
+        "duration_sec": duration,
+        "tau_high": tau_high,
+        "tau_status": tau_status.get("state"),
+        "subject_id": sid,
+        "events": [
+            {
+                "class": det["class"],
+                "start_sec": float(det["start"]),
+                "end_sec": float(det["end"]),
+                "score": float(det["score"]),
+            }
+            for det in detections
+        ],
+    }
+
+
+# --------------------------------------------------------------------------
 # Static frontend
 # --------------------------------------------------------------------------
 
@@ -1630,7 +1791,8 @@ if __name__ == "__main__":
     import uvicorn
 
     host = resolve_host(os.environ.get("HOST"))
-    port = int(os.environ.get("PORT", "8000"))
+    # 8010 keeps this service clear of family Vite (:5173) and clinician Vite (:5180).
+    port = int(os.environ.get("PORT", "8010"))
     check_exposure(host, APP_TOKEN)
     if APP_TOKEN and not is_loopback(host):
         print("auth      : APP_TOKEN required on mutating requests")

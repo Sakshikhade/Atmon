@@ -113,7 +113,9 @@ overlay:
 # subject's action reference clips. CC BY-NC-SA 4.0 -- non-commercial.
 # Demo match_threshold is UNCALIBRATED.
 identity:
-  enabled: true
+  # Off for family post-capture scoring (no Active Subject / gallery in that path).
+  # Turn on for the webapp demo/live session when a subject gallery is selected.
+  enabled: false
   model_path: models/edgeface_xs_gamma_06.pt
   detector_model_path: models/blaze_face_short_range.tflite  # MediaPipe Tasks FaceDetector
   match_threshold: 0.40
