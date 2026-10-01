@@ -91,6 +91,10 @@ DEMO_TAU_HIGH = 1.5
 FAMILY_DETECT_TAU_SCALE_CAP = 1.25
 FAMILY_DETECT_CONFIRM_SEC_CAP = 1.5
 FAMILY_DETECT_UNCALIBRATED_TAU = 1.0
+# Raw cosine of a real ear-cover take sat near 0.86 for the whole clip, while
+# the other class stayed under 0.73 and non-action footage near 0.4. Z-scoring
+# that clip reports nothing, because there is no quieter background.
+FAMILY_RAW_MATCH_FLOOR = 0.80
 
 
 def soften_for_family_detect(c, tau_high, tau_status):
@@ -1656,7 +1660,7 @@ async def detect_video(file: UploadFile = File(...)):
     c, sid = bind_active_subject(c, require=False)
     try:
         bank, w_base_sec = load_bank(c)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, SystemExit) as exc:
         raise HTTPException(
             503,
             "prototype bank missing — record references and rebuild prototypes first (%s)"
@@ -1688,6 +1692,7 @@ async def detect_video(file: UploadFile = File(...)):
             face_series = face_match_per_chunk(
                 c, tmp_path, sid, bundle["starts"], bundle["chunk_sec"]
             )
+        raw_scores = parts.get("vjepa")
         detections = group_detections(
             class_names,
             grid,
@@ -1697,7 +1702,30 @@ async def detect_video(file: UploadFile = File(...)):
             bundle["chunk_sec"],
             pose_sequences=parts.get("_pose_sequences"),
             face_match_per_chunk=face_series,
+            raw_grid=raw_scores,
         )
+        if not detections and raw_scores is not None:
+            from src.scoring import filled_clip_grid
+
+            detections = group_detections(
+                class_names,
+                filled_clip_grid(raw_scores, FAMILY_RAW_MATCH_FLOOR, tau_high),
+                bundle["starts"],
+                c,
+                tau_high,
+                bundle["chunk_sec"],
+                pose_sequences=parts.get("_pose_sequences"),
+                face_match_per_chunk=face_series,
+                raw_grid=raw_scores,
+            )
+            if detections:
+                print(
+                    "  family detect: action fills the clip -> %s"
+                    % ", ".join(
+                        "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                        for d in detections
+                    )
+                )
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

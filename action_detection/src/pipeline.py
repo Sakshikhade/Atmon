@@ -5,6 +5,8 @@ embeddings, optionally cached pose, fused into one grid. Doing that in three
 places is how the streams drift apart.
 """
 
+import os
+
 from src.chunker import video_id_for
 from src.encoder import build_encoder
 from src.features import ensure_features
@@ -13,6 +15,40 @@ from src.scoring import combined_grid
 
 def pose_available(cfg):
     return bool(cfg.get("pose", {}).get("enabled", False))
+
+
+def _encode_pose(cfg, video_path, video_id, force):
+    """Run pose extraction. Outside pytest, isolate it in a child process.
+
+    MediaPipe's PoseLandmarker SIGABRTs on some macOS builds. That abort cannot
+    be caught in-process and would kill family scoring before any label exists.
+    A dead child is treated like a failed wrist gate: scoring continues on embeddings.
+    """
+    from src.pose import encode_video_pose, load_pose_cache
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return encode_video_pose(cfg, video_path, video_id, force=force)
+
+    import subprocess
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "from src.config import load_config\n"
+        "from src.pose import encode_video_pose\n"
+        "cfg = load_config(%r)\n"
+        "encode_video_pose(cfg, %r, %r, force=%s, progress=False)\n"
+        % (root, cfg["_config_path"], os.path.abspath(video_path), video_id, "True" if force else "False")
+    )
+    proc = subprocess.run([sys.executable, "-c", script], cwd=root)
+    if proc.returncode != 0:
+        raise RuntimeError("pose landmarker exited %s" % proc.returncode)
+    cached = load_pose_cache(cfg, video_id)
+    if cached is None:
+        raise RuntimeError("pose landmarker wrote no cache for %s" % video_id)
+    return cached
 
 
 def load_pose_for(cfg, video_path, video_id, force=False):
@@ -54,7 +90,7 @@ def load_pose_for(cfg, video_path, video_id, force=False):
                       % ", ".join(missing))
 
     try:
-        bundle = encode_video_pose(cfg, video_path, video_id, force=force)
+        bundle = _encode_pose(cfg, video_path, video_id, force=force)
     except Exception as exc:  # noqa: BLE001 -- landmarker / decode; fail soft offline
         if stream_on or crop_on:
             raise

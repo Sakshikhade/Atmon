@@ -7,6 +7,7 @@ import pytest
 from src.encoder import fit_clip_length, l2_normalize, resample_frame_indices  # noqa: E402
 from src.scoring import (  # noqa: E402
     HysteresisTracker,
+    filled_clip_grid,
     group_detections,
     pool_windows,
     resolve_cross_class,
@@ -247,6 +248,30 @@ def test_cross_class_keeps_highest_scoring():
     ]
     kept = resolve_cross_class(dets)
     assert len(kept) == 1 and kept[0]["class"] == "a"
+
+def test_filled_clip_opens_when_zscore_is_flat():
+    cfg = FakeCfg()
+    starts = np.arange(4, dtype=np.float32) * 2
+    raw = np.array([[0.85, 0.86, 0.86, 0.86]], np.float32)
+    flat = np.zeros_like(raw)
+    assert group_detections(["ear_cover"], flat, starts, cfg, tau_high=1.0, chunk_sec=2.0) == []
+    dets = group_detections(
+        ["ear_cover"], filled_clip_grid(raw, 0.80, 1.0), starts, cfg,
+        tau_high=1.0, chunk_sec=2.0, raw_grid=raw,
+    )
+    assert len(dets) == 1
+    assert dets[0]["start"] == 0.0
+    assert dets[0]["end"] == 8.0
+
+
+def test_cross_class_prefers_clearly_higher_raw_match():
+    dets = [
+        {"class": "hair_twirling", "start": 14, "end": 22, "score": 4.8, "raw": 0.72},
+        {"class": "ear_cover", "start": 14, "end": 22, "score": 3.8, "raw": 0.91},
+    ]
+    kept = resolve_cross_class(dets)
+    assert len(kept) == 1 and kept[0]["class"] == "ear_cover"
+
 
 def test_cross_class_leaves_disjoint_classes_alone():
     dets = [

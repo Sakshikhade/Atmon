@@ -403,17 +403,43 @@ def temporal_nms(detections, threshold):
     return kept
 
 
+# Raw cosines closer than this are not separable; fall back to the z-score.
+# Face-near classes often sit inside this band, so sigma still decides those ties.
+_RAW_SEPARATION = 0.05
+
+
+def _prefer_detection(candidate, kept):
+    """True when an overlapping candidate should replace one already kept."""
+    raw_c = candidate.get("raw")
+    raw_k = kept.get("raw")
+    if raw_c is not None and raw_k is not None and abs(raw_c - raw_k) > _RAW_SEPARATION:
+        return raw_c > raw_k
+    return candidate["score"] > kept["score"]
+
+
 def resolve_cross_class(detections):
-    """Where classes overlap in time, keep the highest-scoring class (spec 7.3.5)."""
+    """Where classes overlap in time, keep one class (spec 7.3.5).
+
+    Z-scores are not comparable across classes: each is standardized against
+    its own background, so a quieter class can outrank a clearly better raw
+    match. When both events carry a raw cosine and they differ by more than
+    0.05, the higher raw match wins. Otherwise the higher z-score wins.
+    """
     kept = []
     for det in sorted(detections, key=lambda d: d["score"], reverse=True):
         span = (det["start"], det["end"])
-        overlaps_other_class = any(
-            k["class"] != det["class"]
-            and min(span[1], k["end"]) - max(span[0], k["start"]) > 0
-            for k in kept
-        )
-        if not overlaps_other_class:
+        drop = False
+        for i, other in enumerate(kept):
+            if other["class"] == det["class"]:
+                continue
+            if min(span[1], other["end"]) - max(span[0], other["start"]) <= 0:
+                continue
+            if _prefer_detection(det, other):
+                kept[i] = det
+            else:
+                drop = True
+            break
+        if not drop and det not in kept:
             kept.append(det)
     return kept
 
@@ -432,8 +458,15 @@ def class_tau(cfg, class_name, tau_high):
     return th, tl
 
 
+def _peak_raw(raw, class_index, start, end, starts, chunk_sec):
+    mask = (starts < end) & (starts + chunk_sec > start)
+    if class_index is None or not np.any(mask):
+        return None
+    return float(np.max(raw[class_index][mask]))
+
+
 def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
-                     pose_sequences=None, face_match_per_chunk=None):
+                     pose_sequences=None, face_match_per_chunk=None, raw_grid=None):
     """Score grid -> detections. The offline path (spec 7.3, all six steps).
 
     Live mode runs steps 1-3 only; see live.py and spec 10.2 for why NMS and
@@ -506,10 +539,32 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
 
     # 3. minimum duration
     detections = [d for d in detections if (d["end"] - d["start"]) >= min_duration]
+    if raw_grid is not None:
+        raw = np.asarray(raw_grid)
+        index = {name: i for i, name in enumerate(class_names)}
+        for det in detections:
+            peak = _peak_raw(
+                raw, index.get(det["class"]), det["start"], det["end"],
+                np.asarray(starts, dtype=np.float32), chunk_sec,
+            )
+            if peak is not None:
+                det["raw"] = peak
     # 4. temporal NMS, then 5. cross-class resolution
     detections = temporal_nms(detections, float(cfg["nms_tiou"]))
     detections = resolve_cross_class(detections)
     return sorted(detections, key=lambda d: d["start"])
+
+
+def filled_clip_grid(raw, floor, tau_high):
+    """Scores for a take that is the action, not a spike on background.
+
+    Z-scoring that clip puts the center on the action, so every sigma sits near
+    zero and hysteresis never opens. Chunks whose raw cosine clears `floor`
+    are marked above tau; the rest stay closed.
+    """
+    raw = np.asarray(raw, dtype=np.float32)
+    above = np.float32(float(tau_high) + 1.0)
+    return np.where(raw >= float(floor), above, np.float32(0.0))
 
 
 def background_score_stats(grid):

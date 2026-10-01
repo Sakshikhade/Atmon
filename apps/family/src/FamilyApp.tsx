@@ -14,7 +14,7 @@ import {
   updateGrant,
   verifyEvent,
 } from "./lib/api"
-import { detectStub, detectWithActionService, mapActionDetections } from "./lib/detector"
+import { detectWithActionService, mapActionDetections } from "./lib/detector"
 import { beginLiveDetect, type LiveDetect } from "./lib/liveDetect"
 import { overlaps } from "./lib/exposure"
 import { uploadRecording } from "./lib/cloudMedia"
@@ -32,7 +32,6 @@ import {
   clinicianSaid,
   confWord,
   familyStatus,
-  durWord,
   kindLabel,
   mmss,
   roleWord,
@@ -633,31 +632,23 @@ export function FamilyApp({
       const marker = data.tracked[0]?.key ?? "flap"
       const channels = (audioOn ? "both" : "video") as "both" | "video"
       const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
-      let detected
-      let detectorVersion = "stub"
-      const liveEvents = await liveDone
-      if (liveEvents) {
-        console.info("detect live", liveEvents)
-        detected = mapActionDetections(liveEvents, take.durationMs, channels).filter(
-          (event) => !overlaps(event.onsetMs, event.durationMs, take.removed),
+      let detected: ReturnType<typeof mapActionDetections> = []
+      let detectorVersion = "unavailable"
+      // Live notices are a preview. The saved times come from scoring this file,
+      // so each action's start and end are positions in the clip.
+      await liveDone
+      await fetch(`${detectUrl.replace(/\/$/, "")}/api/live/stop`, { method: "POST" }).catch(() => undefined)
+      try {
+        const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
+        detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+        detectorVersion = scored.detectorVersion
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Detector offline."
+        show(
+          message
+            ? `${message} This take was saved with no detections.`
+            : "Detector offline. This take was saved with no detections.",
         )
-        detectorVersion = "xclip-prototypes-v1"
-      } else {
-        try {
-          const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
-          detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-          detectorVersion = scored.detectorVersion
-        } catch {
-          detected = detectStub(
-            id,
-            take.durationMs,
-            take.preRollMs,
-            data.tracked.map((item) => item.key),
-          )
-            .map((event) => ({ ...event, channels }))
-            .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
-          show("Detector offline — used the local stand-in for this take.")
-        }
       }
       const payload = {
         sessionId: id,
@@ -733,7 +724,7 @@ export function FamilyApp({
       return (
         <button className="ev-item" type="button" onClick={() => openEvent(item.id, parent.id)}>
           <span className="title">This part was removed</span>
-          <span className="meta">{mmss(item.onsetMs / 1000)}, {durWord(item.durationMs / 1000)}</span>
+          <span className="meta">{mmss(item.onsetMs / 1000)}–{mmss((item.onsetMs + item.durationMs) / 1000)}</span>
           <span className="badge">Not kept</span>
         </button>
       )
@@ -746,7 +737,7 @@ export function FamilyApp({
           {CLASSES[item.classKey].short}
           {meta.extra}
         </span>
-        <span className="meta">{mmss(item.onsetMs / 1000)}, {durWord(item.durationMs / 1000)}</span>
+        <span className="meta">{mmss(item.onsetMs / 1000)}–{mmss((item.onsetMs + item.durationMs) / 1000)}</span>
         {item.flagged ? (
           <svg className="flag" viewBox="0 0 24 24" fill="currentColor" aria-label="Flagged">
             <path d="M5 3v18h2v-7h9l-2-4 2-4H7V3z" />
@@ -1071,7 +1062,7 @@ export function FamilyApp({
         <div className="row mt8">
           {event.mediaSuppressed ? <h1 className="h2">This part was removed</h1> : <><Dot classKey={shownKey} /><h1 className="h2">{CLASSES[shownKey].name}</h1></>}
         </div>
-        <p className="muted small mt4">{event.mediaSuppressed ? "The frames were not kept." : `${kindLabel(shownKey, targetFor(shownKey))}.`} From {mmss(event.onsetMs / 1000)}, {durWord(event.durationMs / 1000)}.</p>
+        <p className="muted small mt4">{event.mediaSuppressed ? "The frames were not kept." : `${kindLabel(shownKey, targetFor(shownKey))}.`} {mmss(event.onsetMs / 1000)}–{mmss((event.onsetMs + event.durationMs) / 1000)} in this clip.</p>
         <div className="player mt12">
           <SessionVideo
             sessionId={session.id}
