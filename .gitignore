@@ -228,6 +228,9 @@ src/scratchpad.txt
 /data/
 /models/
 
+# Dependencies. Matches node_modules in any directory of this repo.
+node_modules/
+
 # macOS
 .DS_Store
 
