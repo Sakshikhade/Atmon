@@ -2,7 +2,15 @@
 
 **Autism Activity Monitoring & Alerting System (AAMAS)**
 
-This document defines *what* AAMAS is and *why* — its vision, target users, capabilities, system architecture, privacy-by-design model, and success criteria as a lightweight, self-contained local edge monitor and video ingestion tool. For technical implementation and component details see [architecture.md](architecture.md); for setup and developer workflow see [development.md](development.md); for the test protocol see [test_plan.md](test_plan.md).
+> **Current product loop (ATMON):** family Vite app → post-capture
+> `POST /api/detect/video` on `action_detection` (:8010) → Supabase → clinician
+> app. Video stays on-device; no live scoring while recording. See the root
+> [README](../../README.md) and [detection.md](../detection.md).
+>
+> The sections below describe the **legacy standalone edge monitor** (`src/`,
+> webhooks, HUD). That path is not what the family/clinician apps use today.
+
+This document defines *what* AAMAS is and *why* — its vision, target users, capabilities, system architecture, privacy-by-design model, and success criteria as a lightweight, self-contained local edge monitor and video ingestion tool. For the current ATMON architecture see [SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md). Legacy edge-monitor details: [architecture.md](../archive/legacy-aamas/architecture.md), [development.md](../archive/legacy-aamas/development.md), [test_plan.md](../archive/legacy-aamas/test_plan.md).
 
 ---
 

@@ -6,7 +6,7 @@ Privacy-first autism activity monitoring for families and clinicians.
 
 1. Family records a take in the handheld app (video stays on-device in IndexedDB). No live detection runs while recording.
 2. On stop, the saved clip is scored by **`POST /api/detect/video`** on the local **action_detection** service (X-CLIP few-shot prototypes on port **8010**).
-3. Events sync to **Supabase**; the family verifies / flags what to share.
+3. Events sync to **Supabase**; the family verifies / flags what to share (or deletes their own take).
 4. The clinician app reviews only what a family has granted.
 
 Do **not** run `python -m src.server` for this flow. That edge-dashboard path is legacy and is not part of family/clinician detection. The family app never uses live frame/`/api/live` scoring — only post-capture `/api/detect/video`.
@@ -31,9 +31,9 @@ Do **not** run `python -m src.server` for this flow. That edge-dashboard path is
 
 | Layer | Role |
 | :--- | :--- |
-| `apps/family` | Capture, local video, post-capture detect call, verify/flag/share |
+| `apps/family` | Capture, local video, post-capture detect, verify/flag/share, delete own session |
 | `action_detection/` | Few-shot X-CLIP scoring (`POST /api/detect/video`) |
-| Supabase | Auth, sessions, events, share grants |
+| Supabase | Auth, sessions, events, share grants, recorder DELETE RLS |
 | `apps/clinician` | Review flagged/shared events (does **not** call `:8010`) |
 
 ---
@@ -118,7 +118,7 @@ npm run dev
 
 Clinician accounts only see children/sessions covered by an active **share grant**. Flagged clips appear in the review queue after the family shares them.
 
-More detail: [doc/detection.md](doc/detection.md).
+More detail: [docs/detection.md](docs/detection.md).
 
 ---
 
@@ -142,9 +142,10 @@ Family mapper: `apps/family/src/lib/detector.ts`
 - **Backbone:** X-CLIP (`backbone: xclip` in `config.yaml`).
 - **Bank:** `cache/prototypes_xclip.npz` — classes `ear_cover`, `hair_twirling`, `head_nodding` (512-d).
 - **Identity:** `identity.enabled: false` for unsupervised family post-capture (no Active Subject gallery required).
-- **Family thresholds:** `/api/detect/video` softens uncalibrated tau / per-class scales so short handheld takes are not silent (`soften_for_family_detect` in `action_detection/webapp/server.py`). Live demo thresholds stay stricter.
+- **Family thresholds:** `/api/detect/video` softens τ / confirm / wrist gate, merges a raw-cosine floor (`FAMILY_RAW_MATCH_FLOOR=0.75`) with sigma hysteresis via `resolve_cross_class`, then `refine_family_detections` (see [docs/detection.md](docs/detection.md)). Live demo thresholds stay stricter.
 - **Post-capture only:** recording screen shows camera, timer, and controls only — no live event marks or detect hints. Events appear after stop on processing → details.
 - **Stop UX:** family shows **Saving…** while scoring; detect call times out (~45s) then falls back to `detectStub` (toast: local stand-in used).
+- **Session delete:** recorder can remove their take (cloud rows under DELETE RLS + local IndexedDB). Migration: `supabase/migrations/20261004190000_session_delete_recorder.sql`.
 
 Python deps: `action_detection/requirements.txt` (torch, transformers, mediapipe, fastapi, …).
 
@@ -171,7 +172,8 @@ Optional `VITE_MEDIA_URL` (legacy cloud media host) is unused in the default on-
 | `apps/clinician/` | Clinician workspace (Vite/React) |
 | `action_detection/` | X-CLIP detector + FastAPI + demo UI (`:8010`) |
 | `supabase/` | SQL migrations |
-| `doc/` | Product and detection docs |
+| `docs/` | Product, architecture, sprints, runbooks (see [docs/README.md](docs/README.md)) |
+| `AGENTS.md` | AI agent contract + quality gates |
 | `src/`, `static/`, `samples/` | Legacy edge monitor / ingest / dashboards — **not** used by the family↔detect↔clinician loop |
 
 ---
@@ -199,7 +201,9 @@ curl -sS -F "file=@samples/sample-2.mp4;type=video/mp4" \
 | :--- | :--- |
 | Stop button looks stuck | Scoring in progress — badge should read **Saving…**; first X-CLIP load is slow |
 | Toast: detector offline / stub events | `:8010` down, CORS, or detect timeout |
-| `events: []` but `xclip-prototypes-v1` | No matching behaviour in the clip, or bank/thresholds; quiet clips are normal |
+| `events: []` but `xclip-prototypes-v1` | No matching behaviour, bank missing pose for wrist gate, or raw peak below floor (~0.75) |
+| Ear cover labeled hair / extra head_nodding | Expect refine + cross-class merge; if still wrong, check wrist gate / prototypes |
+| Delete session fails | Migration `20261004190000_session_delete_recorder` not applied, or not the recorder |
 | 503 prototype bank missing | Place or rebuild `action_detection/cache/prototypes_xclip.npz` |
 | Clinician queue empty | No share grant / nothing flagged — clinician does not call the detector |
 
@@ -207,9 +211,16 @@ curl -sS -F "file=@samples/sample-2.mp4;type=video/mp4" \
 
 ## Documentation
 
-- [Post-capture detection](doc/detection.md) — wiring, labels, run steps
-- [Product scope](doc/product-scope.md) — goals and privacy
+- [Docs index](docs/README.md) — hub (current vs legacy)
+- [AGENTS.md](AGENTS.md) — agent steering, gates, invariants
+- [STATUS.md](STATUS.md) — executive snapshot
+- [Sprint tracker](docs/sprints/SPRINT_TRACKER.md) — assignable `S<N>-T<M>` tasks
+- [Post-capture detection](docs/detection.md) — wiring, labels, run steps
+- [Product scope](docs/product/PRODUCT_SCOPE.md) — goals and privacy
+- [Developer guide](docs/runbooks/DEVELOPER_GUIDE.md) — local three-terminal setup
 - [action_detection/README.md](action_detection/README.md) — detector internals / demo UI
+
+Cheat sheet: `make help` · gates: `make validate-local`
 
 ---
 

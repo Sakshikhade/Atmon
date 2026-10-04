@@ -7,7 +7,7 @@ This document defines the testing strategy, test cases, and execution protocols 
 
 ## 1. Objectives & Quality Benchmarks
 
-The testing strategy is designed to verify that the AAMAS local monitor meets the core system requirements defined in the [Product Scope](product-scope.md):
+The testing strategy is designed to verify that the AAMAS local monitor meets the core system requirements defined in the [Product Scope](../../product/PRODUCT_SCOPE.md):
 
 *   **Detection Accuracy:** $\ge 85\%$ precision and recall on targeted repetitive behaviors.
 *   **Pipeline Latency:** $\le 1.5$ seconds elapsed from threshold-exceeding behavior start to alert dispatch.

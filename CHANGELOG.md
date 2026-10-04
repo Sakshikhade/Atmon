@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Nexus-style docs governance: `docs/` hub, root `AGENTS.md`, `STATUS.md`, `DESIGN.md`, `Makefile` quality gates, `.agents/skills/` (ops / sprint / PR).
+- Sprint system seeded from backlog assessment (`docs/sprints/SPRINT_TRACKER.md`, Sprint 1–6 PROMPTs, `BACKLOG.md`).
+- ATMON architecture overview + ADR-001 (post-capture family detect).
+- `scripts/audit_docs.py` and `make validate-docs`.
+
+### Changed
+- Renamed `doc/` → `docs/`; archived legacy AAMAS docs under `docs/archive/legacy-aamas/`.
+- Family detection remains post-capture only; session delete for recorder (prior product work on `new_implementations`).
+
 ## [1.1.0] - 2026-09-02
 
 ### Added

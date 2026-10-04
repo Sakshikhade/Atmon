@@ -7,6 +7,12 @@ No training in v1. Spec: [proj_desc.md](proj_desc.md). Measurement history:
 
 **Default backbone:** X-CLIP (`microsoft/xclip-base-patch16`).
 
+**Family product path:** the handheld family app scores only after recording via
+`POST /api/detect/video` (softened thresholds, raw-floor merge, refine). It does
+**not** use live `/api/frame` or `/api/live/*`. Identity is off for that path.
+See [docs/detection.md](../docs/detection.md). The web demo Live tab below is
+separate.
+
 Before trusting any number this produces, read
 [Verification status](#verification-status--read-this-before-trusting-anything).
 **The threshold this repo ships with is an uncalibrated demo preset.**

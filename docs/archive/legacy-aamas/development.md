@@ -1,5 +1,9 @@
 # Development Guide
 
+> **Family / clinician / detect loop:** use the root [README](../../../README.md) and
+> [detection.md](../../detection.md) (`action_detection` on :8010, Vite apps on
+> :5173 / :5180). This guide is for the **legacy** edge monitor under `src/`.
+
 This guide covers everything needed to set up a local development environment, run the standalone AAMAS edge monitor and video ingestion tool, configure alerting, and contribute changes.
 
 ---

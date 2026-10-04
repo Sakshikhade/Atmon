@@ -2,7 +2,7 @@
 
 **Autism Activity Monitoring & Alerting System (AAMAS)**
 
-This document describes the implemented system architecture — components, data flow, thread model, metrics, and verification outcomes for the standalone local AAMAS edge monitor and video ingestion tool. For product scope and vision see [product-scope.md](product-scope.md); for setup and developer workflow see [development.md](development.md); for the test protocol see [test_plan.md](test_plan.md).
+This document describes the implemented system architecture — components, data flow, thread model, metrics, and verification outcomes for the standalone local AAMAS edge monitor and video ingestion tool. For product scope and vision see [PRODUCT_SCOPE.md](../../product/PRODUCT_SCOPE.md); for setup and developer workflow see [development.md](development.md); for the test protocol see [test_plan.md](test_plan.md). Current ATMON architecture: [SYSTEM_OVERVIEW.md](../../architecture/SYSTEM_OVERVIEW.md).
 
 ---
 
