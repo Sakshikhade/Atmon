@@ -9,7 +9,7 @@
 
 | Sprint ID | Objective | Lead / Assignee | Status | Envelope |
 |---|---|---|:---:|---|
-| **Sprint 1** | Pilot blockers: household admin, export/delete, retention | *TBD* | **ACTIVE** | [PROMPT](sprint-01/PROMPT.md) · [REPORT](sprint-01/REPORT.md) |
+| **Sprint 1** | Pilot blockers: household admin, export/delete, retention | Sakshi + Mateo | **ACTIVE** | [PROMPT](sprint-01/PROMPT.md) · [REPORT](sprint-01/REPORT.md) |
 | **Sprint 2** | Trust, assent, clinical export, clip-unit share | *TBD* | QUEUED | [PROMPT](sprint-02/PROMPT.md) |
 | **Sprint 3** | Detect quality loop + vocal spike | *TBD* | QUEUED | [PROMPT](sprint-03/PROMPT.md) |
 | **Sprint 4** | Compliance & clinician identity | *TBD* | QUEUED | [PROMPT](sprint-04/PROMPT.md) |
@@ -37,23 +37,25 @@ Branch naming: `feat/s<N>-t<M>-<slug>` (see [AGENTS.md](../../AGENTS.md)).
 
 | Task ID | Story | Track | Pts | Status | Assignee |
 |---|---|---|---|---|---|
-| **S1-T01** | Wire “Add someone” / invite household member | FE-Family + BE-Platform | 5 | TODO | |
-| **S1-T02** | Self-serve household + child creation | FE-Family + BE-Platform | 8 | TODO | |
-| **S1-T03** | Family export everything (metadata + event log) | FE-Family + BE-Platform | 5 | TODO | |
-| **S1-T04** | Family delete everything (verifiable) | FE-Family + BE-Platform | 8 | TODO | |
-| **S1-T05** | Retention expiry job (flagged keep / unflagged age out) | BE-Platform | 5 | TODO | |
+| **S1-T02** | Self-serve household + child creation | FE-Family + BE-Platform | 8 | TODO | Sakshi |
+| **S1-T01** | Wire “Add someone” / invite household member | FE-Family + BE-Platform | 5 | TODO | Sakshi |
+| **S1-T04** | Family delete everything (verifiable) | FE-Family + BE-Platform | 8 | TODO | Mateo |
+| **S1-T03** | Family export everything (metadata + event log) | FE-Family + BE-Platform | 5 | TODO | Mateo |
+| **S1-T05** | Retention expiry job (flagged keep / unflagged age out) | BE-Platform | 5 | TODO | Mateo |
+
+**Work order:** Sakshi: S1-T02 → S1-T01. Mateo: S1-T04 → S1-T03 → S1-T05.
 
 **Exit criteria:** No toast-only stubs for export/delete-everything; new family can onboard without SQL seed.
 
 ---
 
-## Suggested team split
+## Sprint 1 team split
 
-| Seat | Track | Focus |
-|---|---|---|
-| Dev A | FE-Family | Onboarding, assent, trust, capture UX |
-| Dev B | BE-Platform + FE-Clinician | RLS, export/delete, clinical export, audit |
-| Dev C | BE-Detect | Regression pack, feedback store, vocal spike |
+| Seat | Person | Track | Sprint 1 focus |
+|---|---|---|---|
+| Dev A | **Sakshi** | FE-Family (+ BE-Platform) | S1-T02 → S1-T01 (onboarding + invite) |
+| Dev B | **Mateo** | BE-Platform | S1-T04 → S1-T03 → S1-T05 (delete / export / retention) |
+| Dev C | *unassigned* | BE-Detect | Sprint 3+ (regression, vocal) |
 
 ---
 

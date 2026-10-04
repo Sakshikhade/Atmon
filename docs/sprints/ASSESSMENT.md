@@ -158,11 +158,11 @@ Suggested role tags:
 
 | Story | Backlog | Track | Pts | Assignee | Acceptance |
 |---|---|---|---|---|---|
-| Wire “Add someone” / invite household member | F-5.1, F-7.1 | `FE-Family` + `BE-Platform` | 5 | | Admin can invite member with role + `can_record`; invitee joins household |
-| Self-serve household + child creation | F-8.1 | `FE-Family` + `BE-Platform` | 8 | | New account can create household and first child without SQL seed |
-| Family export everything (metadata + event log) | F-6.3 | `FE-Family` + `BE-Platform` | 5 | | Export downloads structured log; video policy documented (on-device vs cloud) |
-| Family delete everything (verifiable) | F-6.3 | `FE-Family` + `BE-Platform` | 8 | | Hard-delete household-owned rows; UI confirms rows gone; local IndexedDB cleared |
-| Retention expiry job (flagged keep, unflagged age out) | F-6.1 | `BE-Platform` | 5 | | Scheduled job respects `retention_policies`; flagged sessions promoted |
+| Self-serve household + child creation | F-8.1 | `FE-Family` + `BE-Platform` | 8 | Sakshi | New account can create household and first child without SQL seed |
+| Wire “Add someone” / invite household member | F-5.1, F-7.1 | `FE-Family` + `BE-Platform` | 5 | Sakshi | Admin can invite member with role + `can_record`; invitee joins household |
+| Family delete everything (verifiable) | F-6.3 | `FE-Family` + `BE-Platform` | 8 | Mateo | Hard-delete household-owned rows; UI confirms rows gone; local IndexedDB cleared |
+| Family export everything (metadata + event log) | F-6.3 | `FE-Family` + `BE-Platform` | 5 | Mateo | Export downloads structured log; video policy documented (on-device vs cloud) |
+| Retention expiry job (flagged keep, unflagged age out) | F-6.1 | `BE-Platform` | 5 | Mateo | Scheduled job respects `retention_policies`; flagged sessions promoted |
 
 **Exit criteria:** No “toast-only” stubs for export/delete-everything; new family can onboard without engineer seed data.
 
@@ -268,11 +268,11 @@ Copy into Linear / GitHub Projects / spreadsheet.
 
 | Sprint | Story (short) | Track | Pts | Assignee | Status |
 |---|---|---|---|---|---|
-| 1 | Household invite | FE-Family / BE-Platform | 5 | | |
-| 1 | Self-serve household + child | FE-Family / BE-Platform | 8 | | |
-| 1 | Export everything | FE-Family / BE-Platform | 5 | | |
-| 1 | Delete everything | FE-Family / BE-Platform | 8 | | |
-| 1 | Retention expiry job | BE-Platform | 5 | | |
+| 1 | Self-serve household + child | FE-Family / BE-Platform | 8 | Sakshi | |
+| 1 | Household invite | FE-Family / BE-Platform | 5 | Sakshi | |
+| 1 | Delete everything | FE-Family / BE-Platform | 8 | Mateo | |
+| 1 | Export everything | FE-Family / BE-Platform | 5 | Mateo | |
+| 1 | Retention expiry job | BE-Platform | 5 | Mateo | |
 | 2 | Bystander ack | FE-Family | 3 | | |
 | 2 | Assent UX polish | FE-Family | 3 | | |
 | 2 | Trust page | FE-Family / Compliance | 5 | | |
@@ -307,8 +307,8 @@ Copy into Linear / GitHub Projects / spreadsheet.
 
 | Developer seat | Primary track | Owns sprints focus |
 |---|---|---|
-| Dev A | `FE-Family` | Onboarding, assent, trust, capture resilience |
-| Dev B | `BE-Platform` + `FE-Clinician` | RLS, export/delete, clinical export, audit, metrics |
+| Dev A (**Sakshi**) | `FE-Family` | Sprint 1: S1-T02 → S1-T01 |
+| Dev B (**Mateo**) | `BE-Platform` | Sprint 1: S1-T04 → S1-T03 → S1-T05 |
 | Dev C | `BE-Detect` | Regression pack, verification feedback, vocal spike |
 | Shared / PM | `Compliance` | COPPA checklist, trust copy, jurisdiction, deferral memo |
 
