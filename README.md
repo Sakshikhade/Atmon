@@ -4,12 +4,12 @@ Privacy-first autism activity monitoring for families and clinicians.
 
 **Product loop**
 
-1. Family records a take in the handheld app (video stays on-device in IndexedDB).
-2. On stop, the clip is scored by the local **action_detection** service (X-CLIP few-shot prototypes on port **8010**).
+1. Family records a take in the handheld app (video stays on-device in IndexedDB). No live detection runs while recording.
+2. On stop, the saved clip is scored by **`POST /api/detect/video`** on the local **action_detection** service (X-CLIP few-shot prototypes on port **8010**).
 3. Events sync to **Supabase**; the family verifies / flags what to share.
 4. The clinician app reviews only what a family has granted.
 
-Do **not** run `python -m src.server` for this flow. That edge-dashboard path is legacy and is not part of family/clinician detection.
+Do **not** run `python -m src.server` for this flow. That edge-dashboard path is legacy and is not part of family/clinician detection. The family app never uses live frame/`/api/live` scoring — only post-capture `/api/detect/video`.
 
 ---
 
@@ -143,7 +143,8 @@ Family mapper: `apps/family/src/lib/detector.ts`
 - **Bank:** `cache/prototypes_xclip.npz` — classes `ear_cover`, `hair_twirling`, `head_nodding` (512-d).
 - **Identity:** `identity.enabled: false` for unsupervised family post-capture (no Active Subject gallery required).
 - **Family thresholds:** `/api/detect/video` softens uncalibrated tau / per-class scales so short handheld takes are not silent (`soften_for_family_detect` in `action_detection/webapp/server.py`). Live demo thresholds stay stricter.
-- **Stop UX:** family shows **Saving…** while scoring; detect call times out (~45s) then falls back to stub.
+- **Post-capture only:** recording screen shows camera, timer, and controls only — no live event marks or detect hints. Events appear after stop on processing → details.
+- **Stop UX:** family shows **Saving…** while scoring; detect call times out (~45s) then falls back to `detectStub` (toast: local stand-in used).
 
 Python deps: `action_detection/requirements.txt` (torch, transformers, mediapipe, fastapi, …).
 

@@ -509,6 +509,7 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
         for t, score in enumerate(series):
             start_sec = float(starts[t])
             allow_open = True
+            gated_chunk = False
             if name in gate_thresholds:
                 if sequences is None or t >= len(sequences):
                     if not warned_missing:
@@ -520,6 +521,7 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
                     allow_open = bool(
                         wrist_near_ear(sequences[t], threshold=gate_thresholds[name])
                     )
+                    gated_chunk = not allow_open
             if allow_open and identity_on:
                 if face_series is None or t >= len(face_series):
                     if not warned_face:
@@ -529,8 +531,14 @@ def group_detections(class_names, grid, starts, cfg, tau_high, chunk_sec=None,
                     allow_open = False
                 else:
                     allow_open = bool(face_series[t])
+            # Gate failure must close, not only block open. On the family
+            # filled-clip path appearance cosine stays high after hands drop,
+            # so hysteresis would otherwise glue two ear-cover bouts together.
+            score_step = float(score)
+            if gated_chunk:
+                score_step = min(score_step, tl - 1e-3)
             _, closed = tracker.step(
-                start_sec, start_sec + chunk_sec, score, allow_open=allow_open)
+                start_sec, start_sec + chunk_sec, score_step, allow_open=allow_open)
             if closed:
                 detections.append(closed)
         final = tracker.flush(float(starts[-1]) + chunk_sec)

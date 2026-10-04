@@ -4,6 +4,7 @@ import {
   addSeenEvent,
   createGrant,
   declineAsk,
+  deleteSession,
   queueOutbox,
   saveCapture,
   saveConsent,
@@ -14,12 +15,11 @@ import {
   updateGrant,
   verifyEvent,
 } from "./lib/api"
-import { detectWithActionService, mapActionDetections } from "./lib/detector"
-import { beginLiveDetect, type LiveDetect } from "./lib/liveDetect"
+import { detectStub, detectWithActionService, mapActionDetections } from "./lib/detector"
 import { overlaps } from "./lib/exposure"
 import { uploadRecording } from "./lib/cloudMedia"
 import { uuidv7 } from "./lib/ids"
-import { loadVideo, saveVideo, sha256 } from "./lib/mediaStore"
+import { deleteVideo, loadVideo, saveVideo, sha256 } from "./lib/mediaStore"
 import { PhoneRecorder } from "./lib/recorder"
 import {
   CLASS_KEYS,
@@ -478,9 +478,6 @@ export function FamilyApp({
   const [freshId, setFreshId] = useState<string | null>(null)
   const [hasVideo, setHasVideo] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [detectHint, setDetectHint] = useState("")
-  const [liveMarks, setLiveMarks] = useState<{ class: string; start_sec: number; end_sec: number; score: number }[]>([])
-  const liveRef = useRef<LiveDetect | null>(null)
   const capturing = screen === "recording"
   const capture = useCapture(capturing)
 
@@ -576,11 +573,6 @@ export function FamilyApp({
   useEffect(() => {
     if (screen !== "recording") {
       takeStream.current = null
-      const handle = liveRef.current
-      liveRef.current = null
-      if (handle) handle.abort()
-      setDetectHint("")
-      setLiveMarks([])
       return
     }
     const recorder = capture.engine.current
@@ -590,24 +582,17 @@ export function FamilyApp({
     if (takeStream.current === capture.stream) return
     takeStream.current = capture.stream
     recorder.startTake()
-    const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
-    setLiveMarks([])
-    liveRef.current = beginLiveDetect(recorder.camera() ?? capture.stream, detectUrl, setDetectHint, setLiveMarks)
   }, [screen, capture.stream, obscuring, audioOn])
 
   async function finishRecording() {
     const recorder = capture.engine.current
     if (!recorder || saving) return
     setSaving(true)
-    setPaused(true)
-    const handle = liveRef.current
-    liveRef.current = null
-    handle?.stopPump()
-    const liveDone = handle ? handle.finish() : Promise.resolve(null)
+    setPaused(false)
+    show("Stopping — scoring this take…", 8000)
     try {
       const take = await recorder.stopTake()
       if (!take) {
-        setPaused(false)
         show("Nothing was recorded.")
         return
       }
@@ -633,22 +618,21 @@ export function FamilyApp({
       const channels = (audioOn ? "both" : "video") as "both" | "video"
       const detectUrl = import.meta.env.VITE_DETECT_URL || "http://127.0.0.1:8010"
       let detected: ReturnType<typeof mapActionDetections> = []
-      let detectorVersion = "unavailable"
-      // Live notices are a preview. The saved times come from scoring this file,
-      // so each action's start and end are positions in the clip.
-      await liveDone
-      await fetch(`${detectUrl.replace(/\/$/, "")}/api/live/stop`, { method: "POST" }).catch(() => undefined)
+      let detectorVersion = "stub"
       try {
         const scored = await detectWithActionService(take.blob, take.durationMs, detectUrl, channels)
         detected = scored.events.filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
         detectorVersion = scored.detectorVersion
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Detector offline."
-        show(
-          message
-            ? `${message} This take was saved with no detections.`
-            : "Detector offline. This take was saved with no detections.",
+      } catch {
+        detected = detectStub(
+          id,
+          take.durationMs,
+          take.preRollMs,
+          data.tracked.map((item) => item.key),
         )
+          .map((event) => ({ ...event, channels }))
+          .filter((event) => !overlaps(event.onsetMs, event.durationMs, take.removed))
+        show("Detector offline — used the local stand-in for this take.")
       }
       const payload = {
         sessionId: id,
@@ -855,17 +839,8 @@ export function FamilyApp({
           </div>
           <div style={{ position: "absolute", left: 12, bottom: 12, right: 12, fontSize: 13, color: "#F9FAFB", opacity: 0.85 }}>
             {saving
-              ? "Saving this take. The camera is off."
-              : detectHint || "The camera started when you tapped Record now. Tap a face to mark who this is about."}
-            {liveMarks.length > 0 ? (
-              <div className="mt8" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {liveMarks.map((mark) => (
-                  <span key={`${mark.class}-${mark.start_sec}`}>
-                    {(mark.class in CLASSES ? CLASSES[mark.class as keyof typeof CLASSES].name : mark.class)} · {mark.start_sec.toFixed(1)}s
-                  </span>
-                ))}
-              </div>
-            ) : null}
+              ? "Scoring this take. Keep this screen open for a moment."
+              : "The camera started when you tapped Record now. Tap a face to mark who this is about."}
           </div>
         </div>
         <div className="between" style={{ padding: "0 6px" }}>
@@ -873,13 +848,8 @@ export function FamilyApp({
           <button className="big-stop" type="button" aria-label={saving ? "Saving take" : "Stop recording"} disabled={saving} onClick={() => void finishRecording()}><i /></button>
           <button className="btn sm ghost" type="button" disabled={saving} style={paused ? { background: "#fff", color: "#0F172A" } : undefined} onClick={() => {
             setPaused((value) => {
-              if (value) {
-                capture.engine.current?.resume()
-                liveRef.current?.resume()
-              } else {
-                capture.engine.current?.pause()
-                liveRef.current?.pause()
-              }
+              if (value) capture.engine.current?.resume()
+              else capture.engine.current?.pause()
               return !value
             })
           }}>{paused ? "Resume" : "Pause"}</button>
@@ -1036,6 +1006,7 @@ export function FamilyApp({
           <button className="btn secondary" type="button" onClick={() => { setMissedAt(Math.round(session.durationMs / 2000)); setSheet("missed") }}>Add an event I saw</button>
           <button className={`btn${unchecked ? " secondary" : ""}`} type="button" onClick={() => { setShareFrom("session"); setShareScope("clip"); setShareGrantId(primary?.id ?? null); go("share") }}>Share with {clinician}</button>
         </div>
+        <button className="btn quiet sm mt12" type="button" style={{ width: "100%", justifyContent: "center", color: "var(--danger)" }} onClick={() => setSheet("delete-session")}>Delete this session</button>
         <p className="tiny muted mt16">Kept on this phone. {session.obscured ? "Other faces obscured." : "No other faces were obscured."} An observation, not a clinical finding.</p>
       </>
     )
@@ -1544,6 +1515,41 @@ export function FamilyApp({
                 setSheet(null)
                 go("home")
               }}>Discard</button>
+            </div>
+          </div>
+        </>
+      ) : null}
+      {sheet === "delete-session" && session ? (
+        <>
+          <div className="scrim" onClick={() => setSheet(null)} />
+          <div className="sheet">
+            <h2 className="h3">Delete this session?</h2>
+            <p className="small muted mt8">Removes the video on this phone and the cloud copy of this take. There is no undo.</p>
+            <div className="grid2 mt16">
+              <button className="btn secondary" type="button" onClick={() => setSheet(null)}>Keep it</button>
+              <button className="btn" type="button" style={{ background: "var(--danger)" }} onClick={() => {
+                const id = session.id
+                setSheet(null)
+                void (async () => {
+                  const error = await deleteSession(id)
+                  if (error) {
+                    show(error)
+                    return
+                  }
+                  await deleteVideo(id).catch(() => undefined)
+                  setSessionId(null)
+                  setEventId(null)
+                  try {
+                    await reload()
+                  } catch (reloadError) {
+                    show(reloadError instanceof Error ? reloadError.message : "Deleted, but the list didn't refresh.")
+                    go("log")
+                    return
+                  }
+                  show("Session deleted.")
+                  go("log")
+                })()
+              }}>Delete</button>
             </div>
           </div>
         </>

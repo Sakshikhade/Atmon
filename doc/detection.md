@@ -1,14 +1,18 @@
 # Post-capture action detection
 
-The family app scores each finished take with the local **action_detection**
-service (few-shot X-CLIP prototypes), then continues the usual store → family
-verify → clinician review flow.
+The family app does **not** run live scoring while the parent is recording.
+There is no frame pump to `/api/frame` or `/api/live/*` from the handheld UI —
+no on-screen event marks, class chips, or detect hints during a take.
+
+Flow: **record → stop → save video on device → `POST /api/detect/video` →
+review events** on the processing / details screens.
 
 The detector lives in this repo at [`action_detection/`](../action_detection)
-(first-party tree — no external submodule).
+(first-party tree — no external submodule). Live/demo APIs in
+`action_detection/webapp` remain for the detector demo UI only.
 
 The product loop does **not** use `python -m src.server` (legacy edge dashboard).
-Detection and scoring run only through `action_detection` on port **8010**.
+Family scoring runs only through `action_detection` on port **8010**.
 
 ## Labels
 
@@ -66,7 +70,10 @@ with `detector_version: stub`. Successful runs set `detector_version` to
 - EdgeFace / pose weights under `action_detection/models/` when you enable identity or the ear wrist gate (large files are gitignored; copy or download per machine)
 - Identity gate defaults to **off** in `action_detection/config.yaml` so family post-capture scoring does not require an Active Subject gallery
 - First request may download X-CLIP weights from Hugging Face (~750 MB)
-- Uncalibrated family detect uses a softened demo tau (see `soften_for_family_detect` in `webapp/server.py`)
+- Uncalibrated family detect uses a softened demo tau, a raw-cosine floor
+  (`FAMILY_RAW_MATCH_FLOOR`), and a looser ear-cover wrist gate
+  (`FAMILY_DETECT_WRIST_NEAR_EAR`) — see `soften_for_family_detect` in
+  `webapp/server.py`. Live demo thresholds stay stricter.
 
 ## Mapper smoke test
 

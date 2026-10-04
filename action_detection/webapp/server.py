@@ -91,10 +91,19 @@ DEMO_TAU_HIGH = 1.5
 FAMILY_DETECT_TAU_SCALE_CAP = 1.25
 FAMILY_DETECT_CONFIRM_SEC_CAP = 1.5
 FAMILY_DETECT_UNCALIBRATED_TAU = 1.0
-# Raw cosine of a real ear-cover take sat near 0.86 for the whole clip, while
-# the other class stayed under 0.73 and non-action footage near 0.4. Z-scoring
-# that clip reports nothing, because there is no quieter background.
-FAMILY_RAW_MATCH_FLOOR = 0.80
+# Raw cosine of a strong ear-cover take sat near 0.86; handheld family takes
+# often peak ~0.78–0.80 while other classes stay under ~0.65 and idle footage
+# near 0.4. Z-scoring that clip reports nothing (no quieter background). Floor
+# 0.80 missed a real 12:50 take at peak 0.791 with wrist-gate True — use 0.75.
+FAMILY_RAW_MATCH_FLOOR = 0.75
+# Live demo keeps wrist_near_ear_threshold 0.28. Selfie / seated handheld takes
+# often measure 0.30-0.40 even with hands on ears (13:03 take: peak raw 0.781,
+# wrist False at 0.28, opens from ~0.40).
+FAMILY_DETECT_WRIST_NEAR_EAR = 0.45
+# On short handheld takes, secondary classes often open during settle-in
+# (head_nodding before ear cover). Drop a weaker event when the best raw
+# match beats it by this margin.
+FAMILY_DOMINANT_RAW_MARGIN = 0.03
 
 
 def soften_for_family_detect(c, tau_high, tau_status):
@@ -108,12 +117,91 @@ def soften_for_family_detect(c, tau_high, tau_status):
         confirm = float(d.get("confirm_sec", 0.0) or 0.0)
         if confirm > FAMILY_DETECT_CONFIRM_SEC_CAP:
             d["confirm_sec"] = FAMILY_DETECT_CONFIRM_SEC_CAP
+        if d.get("require_wrist_near_ear"):
+            current = float(d.get("wrist_near_ear_threshold", 0.28) or 0.28)
+            d["wrist_near_ear_threshold"] = max(current, FAMILY_DETECT_WRIST_NEAR_EAR)
         return d
 
     c.class_cfg = class_cfg
     if tau_status.get("state") == "uncalibrated":
         tau_high = min(float(tau_high), FAMILY_DETECT_UNCALIBRATED_TAU)
     return c, float(tau_high)
+
+
+def refine_family_detections(detections, pose_sequences, starts, chunk_sec, cfg):
+    """Clean family post-capture labels after sigma + raw-floor merge.
+
+    - Wrist-confirmed ear_cover beats hair_twirling (appearance confuses them).
+    - On a take with a clear raw winner, drop weaker side events (e.g. settle-in
+      head_nodding before hands reach the ears).
+    """
+    if not detections:
+        return detections
+
+    from src.pose import wrist_near_ear
+
+    starts = list(starts)
+    chunk_sec = float(chunk_sec)
+    thr = float(cfg.class_cfg("ear_cover").get(
+        "wrist_near_ear_threshold", FAMILY_DETECT_WRIST_NEAR_EAR
+    ))
+
+    def wrist_supported(det):
+        if pose_sequences is None or det.get("class") != "ear_cover":
+            return False
+        hits = 0
+        total = 0
+        for i, t0 in enumerate(starts):
+            t1 = float(t0) + chunk_sec
+            if t1 <= det["start"] or float(t0) >= det["end"]:
+                continue
+            total += 1
+            if i < len(pose_sequences) and wrist_near_ear(
+                pose_sequences[i], threshold=thr
+            ):
+                hits += 1
+        return total > 0 and hits >= max(1, (total + 1) // 2)
+
+    ear_ok = any(wrist_supported(d) for d in detections if d.get("class") == "ear_cover")
+    out = list(detections)
+    if ear_ok:
+        before = len(out)
+        out = [d for d in out if d.get("class") != "hair_twirling"]
+        if len(out) < before:
+            print("  family detect: wrist-confirmed ear_cover dropped hair_twirling")
+
+    with_raw = [d for d in out if d.get("raw") is not None]
+    if len(with_raw) >= 2:
+        best = max(with_raw, key=lambda d: float(d["raw"]))
+        best_raw = float(best["raw"])
+        kept = []
+        dropped = []
+        for det in out:
+            raw = det.get("raw")
+            if (
+                raw is not None
+                and det.get("class") != best.get("class")
+                and best_raw - float(raw) >= FAMILY_DOMINANT_RAW_MARGIN
+            ):
+                dropped.append(det)
+                continue
+            kept.append(det)
+        if dropped:
+            print(
+                "  family detect: dominant %s raw %.3f dropped %s"
+                % (
+                    best["class"],
+                    best_raw,
+                    ", ".join(
+                        "%s %.1f-%.1fs (raw %.3f)"
+                        % (d["class"], d["start"], d["end"], float(d["raw"]))
+                        for d in dropped
+                    ),
+                )
+            )
+            out = kept
+
+    return sorted(out, key=lambda d: d["start"])
 
 #: Message kinds that may be dropped when a subscriber falls behind. Only the
 #: high-rate cosmetic ones -- never anything that records a detection.
@@ -1704,10 +1792,16 @@ async def detect_video(file: UploadFile = File(...)):
             face_match_per_chunk=face_series,
             raw_grid=raw_scores,
         )
-        if not detections and raw_scores is not None:
-            from src.scoring import filled_clip_grid
+        # Z-scoring can open a weaker class (hair_twirling) while ear_cover
+        # fills the clip at high raw cosine but low sigma. Always score the
+        # raw-floor path too, then resolve overlaps by raw match (spec 7.3.5).
+        if raw_scores is not None:
+            from src.scoring import filled_clip_grid, resolve_cross_class
 
-            detections = group_detections(
+            peak_raw = float(max(float(x) for x in raw_scores.ravel())) if getattr(
+                raw_scores, "size", 0
+            ) else 0.0
+            floor_dets = group_detections(
                 class_names,
                 filled_clip_grid(raw_scores, FAMILY_RAW_MATCH_FLOOR, tau_high),
                 bundle["starts"],
@@ -1718,14 +1812,86 @@ async def detect_video(file: UploadFile = File(...)):
                 face_match_per_chunk=face_series,
                 raw_grid=raw_scores,
             )
-            if detections:
+            if floor_dets and not detections:
+                detections = floor_dets
                 print(
-                    "  family detect: action fills the clip -> %s"
-                    % ", ".join(
-                        "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
-                        for d in detections
+                    "  family detect: action fills the clip (peak raw %.3f) -> %s"
+                    % (
+                        peak_raw,
+                        ", ".join(
+                            "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                            for d in detections
+                        ),
                     )
                 )
+            elif floor_dets and detections:
+                before = [(d["class"], d["start"], d["end"]) for d in detections]
+                detections = resolve_cross_class(list(detections) + list(floor_dets))
+                after = [(d["class"], d["start"], d["end"]) for d in detections]
+                if after != before:
+                    print(
+                        "  family detect: raw-floor override (peak raw %.3f) %s -> %s"
+                        % (
+                            peak_raw,
+                            ", ".join("%s %.1f-%.1fs" % (c_, s, e) for c_, s, e in before),
+                            ", ".join("%s %.1f-%.1fs" % (c_, s, e) for c_, s, e in after),
+                        )
+                    )
+                else:
+                    print(
+                        "  family detect: %d event(s) -> %s"
+                        % (
+                            len(detections),
+                            ", ".join(
+                                "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                                for d in detections
+                            ),
+                        )
+                    )
+            elif not detections:
+                print(
+                    "  family detect: empty after soften + raw floor %.2f "
+                    "(peak raw %.3f, tau_high %.2f)"
+                    % (FAMILY_RAW_MATCH_FLOOR, peak_raw, float(tau_high))
+                )
+            else:
+                print(
+                    "  family detect: %d event(s) -> %s"
+                    % (
+                        len(detections),
+                        ", ".join(
+                            "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                            for d in detections
+                        ),
+                    )
+                )
+        elif detections:
+            print(
+                "  family detect: %d event(s) -> %s"
+                % (
+                    len(detections),
+                    ", ".join(
+                        "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                        for d in detections
+                    ),
+                )
+            )
+
+        detections = refine_family_detections(
+            detections,
+            parts.get("_pose_sequences"),
+            bundle["starts"],
+            bundle["chunk_sec"],
+            c,
+        )
+        if detections:
+            print(
+                "  family detect: final -> %s"
+                % ", ".join(
+                    "%s %.1f-%.1fs" % (d["class"], d["start"], d["end"])
+                    for d in detections
+                )
+            )
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

@@ -264,6 +264,52 @@ def test_filled_clip_opens_when_zscore_is_flat():
     assert dets[0]["end"] == 8.0
 
 
+def test_wrist_gate_closes_across_hands_down_gap():
+    """Appearance can stay high after hands drop; the gate must split bouts."""
+    cfg = FakeCfg(
+        classes={
+            "ear_cover": {
+                "require_wrist_near_ear": True,
+                "wrist_near_ear_threshold": 0.28,
+            }
+        },
+    )
+    cfg.class_names = ["ear_cover"]
+    cfg["min_duration_ratio"] = 0.25
+    cfg["w_base_sec"] = 2.0
+    cfg["smoothing_windows"] = 1
+    cfg["chunk_sec"] = 2.0
+    starts = np.arange(6, dtype=np.float32) * 2.0
+    raw = np.full((1, 6), 0.86, dtype=np.float32)
+    # Pose: wrist near ear on chunks 0-1 and 4-5; far on 2-3 (the gap).
+    sequences = np.full((6, 4, 25, 3), np.nan, dtype=np.float32)
+    # Landmark indices used by wrist_near_ear pairs (L/R wrist, L/R ear).
+    from src.pose import L_EAR, L_WRIST, R_EAR, R_WRIST
+
+    for t in range(6):
+        sequences[t, :, L_EAR] = (0.0, 0.0, 0.0)
+        sequences[t, :, R_EAR] = (0.1, 0.0, 0.0)
+        if t in (2, 3):
+            sequences[t, :, L_WRIST] = (2.0, 2.0, 0.0)
+            sequences[t, :, R_WRIST] = (2.1, 2.0, 0.0)
+        else:
+            sequences[t, :, L_WRIST] = (0.05, 0.05, 0.0)
+            sequences[t, :, R_WRIST] = (0.12, 0.05, 0.0)
+
+    dets = group_detections(
+        ["ear_cover"],
+        filled_clip_grid(raw, 0.80, 1.0),
+        starts,
+        cfg,
+        tau_high=1.0,
+        chunk_sec=2.0,
+        pose_sequences=sequences,
+        raw_grid=raw,
+    )
+    # Close stamps at end of the first gate-fail chunk (t=4..6), then reopens at 8.
+    assert [(d["start"], d["end"]) for d in dets] == [(0.0, 6.0), (8.0, 12.0)]
+
+
 def test_cross_class_prefers_clearly_higher_raw_match():
     dets = [
         {"class": "hair_twirling", "start": 14, "end": 22, "score": 4.8, "raw": 0.72},

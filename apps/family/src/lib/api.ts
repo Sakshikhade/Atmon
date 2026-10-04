@@ -55,9 +55,10 @@ export async function loadFamily(userId: string): Promise<FamilyData> {
       supabase
         .from("sessions")
         .select(
-          "id, child_id, household_id, started_at, duration_ms, pre_roll_ms, setting, channels, obscured, antecedent_note, child_aware",
+          "id, child_id, household_id, started_at, duration_ms, pre_roll_ms, setting, channels, obscured, antecedent_note, child_aware, processing_status",
         )
         .eq("household_id", mine.household_id)
+        .or("processing_status.is.null,processing_status.neq.deleted")
         .order("started_at", { ascending: false }),
       supabase
         .from("events")
@@ -444,6 +445,31 @@ export async function saveRetention(
 export async function declineAsk(id: string): Promise<string | null> {
   const { error } = await supabase.from("capture_requests").update({ status: "declined" }).eq("id", id)
   return error?.message ?? null
+}
+
+/** Remove a take the signed-in recorder owns (cloud rows + caller clears IndexedDB). */
+export async function deleteSession(sessionId: string): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser()
+  if (!userData.user?.id) return "Sign in again to delete this session."
+
+  // ml_jobs is ON DELETE NO ACTION; clear it first. Other children cascade.
+  // Always .select() — missing DELETE RLS used to return 0 rows with no error.
+  const jobs = await supabase.from("ml_jobs").delete().eq("session_id", sessionId)
+  if (jobs.error) return jobs.error.message
+
+  const hard = await supabase.from("sessions").delete().eq("id", sessionId).select("id")
+  if (hard.error) return hard.error.message
+  if (hard.data?.length) return null
+
+  const soft = await supabase
+    .from("sessions")
+    .update({ processing_status: "deleted" })
+    .eq("id", sessionId)
+    .select("id")
+  if (soft.error) return soft.error.message
+  if (soft.data?.length) return null
+
+  return "Couldn't delete this session. Sign in again, or ask to apply the delete policy."
 }
 
 export type CaptureSegment = {
