@@ -12,10 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sprint system seeded from backlog assessment (`docs/sprints/SPRINT_TRACKER.md`, Sprint 1–6 PROMPTs, `BACKLOG.md`).
 - ATMON architecture overview + ADR-001 (post-capture family detect).
 - `scripts/audit_docs.py` and `make validate-docs`.
+- `docs/product/ATMON_Capability_Matrix.csv` F-ID status spreadsheet + `make validate-capability-matrix` inventory gate (detailed PASS/FAIL ACs; `QA` / `QA_Status` columns; default QA=Abhishek).
+- Four-person sprint replan (Sakshi/Mateo/Abhishek/Mainak), W1–W3 dates through 2026-10-24, `TODOS.md` follow-ups.
 
 ### Changed
 - Renamed `doc/` → `docs/`; archived legacy AAMAS docs under `docs/archive/legacy-aamas/`.
 - Family detection remains post-capture only; session delete for recorder (prior product work on `new_implementations`).
+- `CAPABILITY_MATRIX.md` is the product loop / integration map; CSV is F-ID status source of truth.
+- Sprint tracker: S1-T06, S5-T06–T08, S6-T05a/T05; Hosting_Owner default Abhishek; pilot-blocker commit scope.
 
 ## [1.1.0] - 2026-09-02
 

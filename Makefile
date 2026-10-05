@@ -1,13 +1,14 @@
-.PHONY: help validate-local validate-docs test-detect test-family build-apps
+.PHONY: help validate-local validate-docs validate-capability-matrix test-detect test-family build-apps
 
 help:
 	@echo "ATMON (atmos-proj) — developer verbs"
 	@echo ""
-	@echo "  make validate-local   Run all 4 quality gates (detect, family, builds, docs)"
-	@echo "  make validate-docs    Audit markdown relative links"
-	@echo "  make test-detect      Pytest in action_detection"
-	@echo "  make test-family      Family detector mapper smoke test"
-	@echo "  make build-apps       Production build family + clinician"
+	@echo "  make validate-local              Run quality gates (detect, family, builds, docs, capability matrix)"
+	@echo "  make validate-docs               Audit markdown relative links"
+	@echo "  make validate-capability-matrix  Audit F-ID inventory in capability CSV"
+	@echo "  make test-detect                 Pytest in action_detection"
+	@echo "  make test-family                 Family detector mapper smoke test"
+	@echo "  make build-apps                  Production build family + clinician"
 	@echo ""
 	@echo "Local stack (manual terminals):"
 	@echo "  cd action_detection && PORT=8010 python webapp/server.py"
@@ -29,6 +30,9 @@ build-apps:
 validate-docs:
 	python3 scripts/audit_docs.py
 
-validate-local: test-detect test-family build-apps validate-docs
+validate-capability-matrix:
+	python3 scripts/audit_capability_matrix.py
+
+validate-local: test-detect test-family build-apps validate-docs validate-capability-matrix
 	@echo ""
 	@echo "validate-local: all gates passed"

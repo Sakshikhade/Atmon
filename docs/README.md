@@ -21,7 +21,8 @@ Welcome to the **ATMON (atmos-proj)** engineering documentation. Active docs des
 
 - [detection.md](detection.md) — post-capture scoring path (`POST /api/detect/video`)
 - [PRODUCT_SCOPE.md](product/PRODUCT_SCOPE.md) — vision, privacy, scope (ATMON banner + legacy body)
-- [CAPABILITY_MATRIX.md](product/CAPABILITY_MATRIX.md) — screens ↔ APIs ↔ tables ↔ detect
+- [ATMON_Capability_Matrix.csv](product/ATMON_Capability_Matrix.csv) — **F-ID status spreadsheet** (capability → AC → owners → dates)
+- [CAPABILITY_MATRIX.md](product/CAPABILITY_MATRIX.md) — product loop / integration map (UI ↔ APIs ↔ tables)
 
 ### 3. Architecture
 

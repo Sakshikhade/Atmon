@@ -5,7 +5,8 @@
 **Date:** 2026-10-04  
 **Purpose:** What is done, what remains, and how to slice remaining B2C work into sprints for developer assignment.
 
-> Status is measured against the **current Vite product loop**, not the legacy `src/` + `static/family.html` prototypes.
+> Status is measured against the **current Vite product loop**, not the legacy `src/` + `static/family.html` prototypes.  
+> Detailed PASS/FAIL acceptance criteria, Impl/Hosting/QA owners, and `QA_Status` live in [`docs/product/ATMON_Capability_Matrix.csv`](../product/ATMON_Capability_Matrix.csv) (`make validate-capability-matrix`).
 
 ---
 

@@ -1,9 +1,37 @@
-# Capability Matrix
+# Product loop / integration map
 
-> Navigation: [Docs Index](../README.md) / Product / **Capability Matrix**
+> Navigation: [Docs Index](../README.md) / Product / **Product loop map**  
+> **F-ID status spreadsheet (source of truth):** [ATMON_Capability_Matrix.csv](ATMON_Capability_Matrix.csv)  
+> Open the CSV in Excel / Google Sheets for capability → use case → AC → owners → dates → status.
 
-Slim end-to-end map for the ATMON product loop. Not exhaustive of every UI
-string — focus is assignable ownership and integration seams.
+## Status rollup (from CSV · 2026-10-05)
+
+| Status | Count |
+|---|---:|
+| Done | 11 |
+| Partial | 24 |
+| Not started | 5 |
+| Deferred | 6 |
+| **Total rows** | **46** |
+
+(Includes F-1.1…F-8.5 plus E-9 and E-10+ Deferred rollups.)
+
+## Owner legend
+
+| Role | People |
+|---|---|
+| Impl_Owner | Sakshi (FE S1 + ML), Mateo (FE/BE), Abhishek (pilot script/hosting tasks), Mainak (blast-radius / memo) |
+| Hosting_Owner | **Abhishek** by default on cloud/shared hosts; **Mainak** only when Notes override |
+| QA | Default **Abhishek** (acceptance / E2E against Acceptance_Criteria); blank on Deferred rollups |
+| QA_Status | `Pass` / `Pending` / `Fail` / `N/A` |
+
+Acceptance_Criteria rows use testable **PASS when / FAIL if** language (purposes, storage tables, tags named where relevant).
+
+Audit: `make validate-capability-matrix` (also part of `make validate-local`).
+
+---
+
+This document is the **journey / integration seam map** (UI → API → tables). It is **not** the F-ID status ledger — use the CSV for that.
 
 | Journey | Family / clinician surface | Client API / call | Backend / table | Notes |
 |---|---|---|---|---|
@@ -34,4 +62,4 @@ string — focus is assignable ownership and integration seams.
 ## Out of matrix (deferred)
 
 Home cameras (E-9), agency multi-tenancy (E-10+), dual-household guardianship,
-billing, true on-device ML. See [BACKLOG.md](../sprints/BACKLOG.md).
+billing, true on-device ML. See [BACKLOG.md](../sprints/BACKLOG.md) and Deferred rows in the CSV.

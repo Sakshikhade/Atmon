@@ -41,7 +41,7 @@ When assigned a task `S<N>-T<M>` from
 3. **Update sprint tracker** — mark task `IN PROGRESS` in
    `docs/sprints/SPRINT_TRACKER.md`.
 4. **Implement code & tests** — prefer TDD; keep family path post-capture only.
-5. **Run the 4 mandatory quality gates** — all must be green before PR.
+5. **Run the mandatory quality gates** — all must be green before PR.
 6. **Record changelog entry** under `[Unreleased]` in `CHANGELOG.md`.
 7. **Submit Pull Request** (do not merge):
    ```bash
@@ -56,7 +56,7 @@ Optional: when the user asks to sync both remotes, push the same branch to
 
 ---
 
-## 3. The 4 Mandatory Quality Gates
+## 3. Mandatory Quality Gates
 
 Every Pull Request must provide terminal evidence for these gates:
 
@@ -66,8 +66,9 @@ Every Pull Request must provide terminal evidence for these gates:
 | **2. Family mapper smoke** | `make test-family` | `detector.test.ts` green |
 | **3. Apps build** | `make build-apps` | Family + clinician `npm run build` succeed |
 | **4. Docs link audit** | `make validate-docs` | `scripts/audit_docs.py` reports 0 broken links |
+| **5. Capability matrix** | `make validate-capability-matrix` | F-ID inventory + Hosting_Owner enum OK |
 
-Convenience: `make validate-local` runs gates 1–4.
+Convenience: `make validate-local` runs gates 1–5.
 
 ---
 
@@ -97,6 +98,7 @@ Convenience: `make validate-local` runs gates 1–4.
 | Cheat sheet | `make help` |
 | All gates | `make validate-local` (`/validate-local`) |
 | Docs audit | `make validate-docs` (`/validate-docs`) |
+| Capability matrix | `make validate-capability-matrix` |
 | Detect tests | `make test-detect` |
 | Family smoke | `make test-family` |
 | App builds | `make build-apps` |
