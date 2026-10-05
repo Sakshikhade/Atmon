@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Renamed `doc/` → `docs/`; archived legacy AAMAS docs under `docs/archive/legacy-aamas/`.
-- Family detection remains post-capture only; session delete for recorder (prior product work on `new_implementations`).
+- Family detection remains post-capture only; session delete for recorder (prior product work; branch renamed `new_implementations` → `dev`).
+- Default engineering base branch renamed to `dev`.
 - `CAPABILITY_MATRIX.md` is the product loop / integration map; CSV is F-ID status source of truth.
 - Sprint tracker: S1-T06, S5-T06–T08, S6-T05a/T05; Hosting_Owner default Abhishek; pilot-blocker commit scope.
 

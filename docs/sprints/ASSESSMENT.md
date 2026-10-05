@@ -1,7 +1,7 @@
 # ATMON Backlog Assessment & Sprint Plan
 
 **Sources:** Product backlog (Epic level + Initiative level), Draft 8 · August 2026  
-**Codebase:** `apps/family`, `apps/clinician`, `action_detection`, `supabase/` · branch `new_implementations`  
+**Codebase:** `apps/family`, `apps/clinician`, `action_detection`, `supabase/` · branch `dev`  
 **Date:** 2026-10-04  
 **Purpose:** What is done, what remains, and how to slice remaining B2C work into sprints for developer assignment.
 

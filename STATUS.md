@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Project** | ATMON (atmos-proj) |
 | **Current Health** | On Track — B2C core loop working; Sprint 1 ACTIVE (W1 → 2026-10-10) |
-| **Branch** | `new_implementations` |
+| **Branch** | `dev` |
 | **Last Updated** | 2026-10-05 (capability matrix + 4-person replan) |
 
 ---

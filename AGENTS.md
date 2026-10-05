@@ -29,10 +29,10 @@
 When assigned a task `S<N>-T<M>` from
 [`docs/sprints/SPRINT_TRACKER.md`](docs/sprints/SPRINT_TRACKER.md):
 
-1. **Sync base branch** (usually `new_implementations` or `main` as directed):
+1. **Sync base branch** (usually `dev` or `main` as directed):
    ```bash
-   git checkout new_implementations
-   git pull origin new_implementations
+   git checkout dev
+   git pull origin dev
    ```
 2. **Create isolated feature branch:**
    ```bash
@@ -46,7 +46,7 @@ When assigned a task `S<N>-T<M>` from
 7. **Submit Pull Request** (do not merge):
    ```bash
    git push -u origin HEAD
-   gh pr create --base new_implementations --title "..." --body "..."
+   gh pr create --base dev --title "..." --body "..."
    ```
 8. **Halt & request review** — present PR link, summary, and gate proof. Do not
    proceed to the next task until the user confirms merge.

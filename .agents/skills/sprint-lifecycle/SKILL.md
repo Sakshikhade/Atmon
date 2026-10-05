@@ -22,7 +22,7 @@ Agent contract: [AGENTS.md](../../../AGENTS.md)
 
 Example: `/sprint-start 01`
 
-1. Sync base (`new_implementations` unless user says otherwise).
+1. Sync base (`dev` unless user says otherwise).
 2. Confirm `docs/sprints/sprint-<id>/PROMPT.md` exists; create `REPORT.md` if missing.
 3. Update registry row in `SPRINT_TRACKER.md` to ACTIVE.
 4. For each task `S<id>-T<M>`:
